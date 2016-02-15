@@ -1,6 +1,10 @@
+#!/usr/bin/env python3
+
 #    Specton Audio Analyser
 #    Copyright (C) 2016 D. Bird <somesortoferror@gmail.com>
 #    https://github.com/somesortoferror/specton
+
+version = 0.1
 
 #    This program is free software: you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -57,29 +61,49 @@ def findGuessEncBin():
         bin = ''
         
     return bin
+
+def findMediaInfoBin():
+    if os.name == 'nt':
+        bin = 'scanners/MediaInfo.exe'
+    elif os.name == 'posix':
+        bin = '/usr/bin/mediainfo'
+    else:
+        bin = ''
         
-def scanner_Thread(row,filenameStr,bin,debug_enabled):
+    return bin
+
+        
+def scanner_Thread(row,filenameStr,binary,options,debug_enabled):
 # run scanner on filenameStr as seperate process
 # and return output as string
     if debug_enabled:
         print("DEBUG: thread started for row {}, file: {}".format(row,filenameStr))
     try:
-        output = subprocess.check_output([bin, filenameStr])
+        output = subprocess.check_output([binary,options,filenameStr])
         output_str = output.decode(sys.stdout.encoding)
     except:
         output_str = "Error"
-    return (row,output_str)
+    return (row,output_str,filenameStr)
 
 if __name__ == '__main__':
     TableHeaders = ["Folder","Filename","Length","Bitrate","Filesize","Encoder"]
     task_count = 0
 
 if __name__ == '__main__':
-    encoder_regex = re.compile("Maybe this file is encoded by (.*)")
-    encoder_string_regex = re.compile("Encoder string \: (.*)")
-    bitrate_regex = re.compile("Data rate.*\: (.*)")
-    length_regex = re.compile("Length.*\: (.*) \(.*\)")
-                    
+    guessenc_encoder_regex = re.compile("Maybe this file is encoded by (.*)")
+    guessenc_encoder_string_regex = re.compile("Encoder string \: (.*)")
+    guessenc_bitrate_regex = re.compile("Data rate.*\: (.*)")
+    guessenc_length_regex = re.compile("Length.*\: ([\d\:\.]*)")
+    guessenc_filesize_regex = re.compile(r"Detected .*?\n  File size.*?\: (\d* bytes)")
+    mediainfo_encoder_regex = re.compile("Writing library.*\: (.*)")
+    mediainfo_length_regex = re.compile("Duration.*\: (.*)")
+    mediainfo_bitrate_regex = re.compile(r"Bit rate.*\: ([\d\. ]* Kbps)")
+    mediainfo_filesize_regex = re.compile(r"File size.*\: (.* .iB)")
+
+def doMP3Checks(mp3guessenc_output):
+# do some MP3 quality checks here
+    return True
+    
 def parse_mp3guessenc_output(mp3guessenc_output):
 # parse mp3guessenc output using regex
 # return parsed variables as a dictionary
@@ -87,33 +111,69 @@ def parse_mp3guessenc_output(mp3guessenc_output):
     bitrate=""
     encoder_string=""
     length=""
+    filesize=""
 
-    search = encoder_regex.search(mp3guessenc_output)
+    search = guessenc_encoder_regex.search(mp3guessenc_output)
     if search is not None:
         encoder=search.group(1)
-    search = encoder_string_regex.search(mp3guessenc_output)
+    search = guessenc_encoder_string_regex.search(mp3guessenc_output)
     if search is not None:
         encoder_string=search.group(1)
-    search = bitrate_regex.search(mp3guessenc_output)
+    search = guessenc_bitrate_regex.search(mp3guessenc_output)
     if search is not None:
         bitrate=search.group(1)
-    search = length_regex.search(mp3guessenc_output)
+    search = guessenc_length_regex.search(mp3guessenc_output)
+    if search is not None:
+        length=search.group(1)
+    search = guessenc_filesize_regex.search(mp3guessenc_output)
+    if search is not None:
+        filesize=search.group(1)
+
+    checks_ok = doMP3Checks(mp3guessenc_output)
+        
+    return {'encoder':encoder, 'bitrate':bitrate ,'encoder_string':encoder_string, 'length':length, 'filesize':filesize, 'checks_ok':checks_ok, 'error':False }
+
+def parse_mediainfo_output(mediainfo_output):
+    encoder=""
+    bitrate=""
+    encoder_string=""
+    length=""
+    filesize=""
+    checks_ok = True
+
+    search = mediainfo_encoder_regex.search(mediainfo_output)
+    if search is not None:
+        encoder=search.group(1)
+
+    search = mediainfo_length_regex.search(mediainfo_output)
     if search is not None:
         length=search.group(1)
 
-    return {'encoder':encoder, 'bitrate':bitrate ,'encoder_string':encoder_string, 'length':length, 'error':False }
+    search = mediainfo_bitrate_regex.search(mediainfo_output)
+    if search is not None:
+        bitrate=search.group(1)
 
+    search = mediainfo_filesize_regex.search(mediainfo_output)
+    if search is not None:
+        filesize=search.group(1)
 
+    return {'encoder':encoder, 'bitrate':bitrate ,'encoder_string':encoder_string, 'length':length, 'filesize':filesize, 'checks_ok':checks_ok, 'error':False }
+    
+    
 def scanner_Finished(fileinfo):
 # callback function
 # runs after scanner process has completed
     i = fileinfo[0]
     scanner_output = fileinfo[1]
+    filenameStr = fileinfo[2]
     global task_count
     task_count -= 1
 
     if not (scanner_output == "Error"):
-        song_info = parse_mp3guessenc_output(scanner_output)
+        if fnmatch.fnmatch(filenameStr, "*.mp3"):
+            song_info = parse_mp3guessenc_output(scanner_output)
+        elif fnmatch.fnmatch(filenameStr, "*.flac"):
+            song_info = parse_mediainfo_output(scanner_output)
 
         if debug_enabled:
             print("DEBUG: thread finished - row {}, result: {}, task count={}".format(i,song_info['encoder'],task_count))
@@ -133,8 +193,6 @@ class Main(QMainWindow):
         self.ui = form_class()
         self.ui.setupUi(self)
 
-        self.statusBar().showMessage('Idle')
-
         def set_Action(owner,icon,menu_entry,shortcut,status_tip,connect):
             Action = QAction(owner)
             Action.setShortcut(shortcut)
@@ -145,7 +203,7 @@ class Main(QMainWindow):
             return Action
 
         exitAction = set_Action(self,'exit.png','&Exit','Ctrl+Q','Exit application',sys.exit)
-        selectFolderAction = set_Action(self,'icons/Folders.png','&Open Directory','Ctrl+O','Add MP3 files from directory',self.select_Folder)
+        selectFolderAction = set_Action(self,'icons/Folders.png','&Open Directory','Ctrl+O','Add audio files from directory',self.select_Folder)
         aboutAction = set_Action(self,'about.png','About','','',self.about_Dlg)
 
         fileMenu = self.ui.menubar.addMenu('&File')
@@ -166,9 +224,12 @@ class Main(QMainWindow):
     	
     def select_Folder(self):
         directory = str(QFileDialog.getExistingDirectory(self, "Select Directory to Scan", os.path.expanduser("~")))
-        filemask = options.get('Filemask') # todo: make this regex
+        
+        filemask = options.get('FilemaskRegEx')
         if filemask == None:
-            filemask = "*.mp3"
+            filemask = "\.mp3$|\.flac$"
+        filemask_regex = re.compile(filemask,re.IGNORECASE)
+
         followsymlinks = options.getboolean('FollowSymlinks')
         if followsymlinks == None:
             followsymlinks = False
@@ -179,12 +240,16 @@ class Main(QMainWindow):
         self.ui.tableWidget.setUpdatesEnabled(False)
         self.ui.progressBar.setMinimum(0)
         self.ui.progressBar.setMaximum(0)
+        self.ui.goButton.setEnabled(False)
+        self.ui.clearButton.setEnabled(False)
+        self.ui.goButton.repaint
+        self.ui.clearButton.repaint
         
         # walk through directory chosen by user
         # and add filenames to treeview
         for root, dirs, files in os.walk(directory, True, None, followsymlinks):
             for name in files:
-                if fnmatch.fnmatch(name, filemask):
+                if filemask_regex.search(name) is not None:
                     i = self.ui.tableWidget.rowCount()
                     self.ui.tableWidget.insertRow(i)
                     filenameItem = QTableWidgetItem(name)
@@ -194,11 +259,13 @@ class Main(QMainWindow):
                     folderItem.setToolTip(root)
                     bitrateItem = QTableWidgetItem("")
                     lengthItem = QTableWidgetItem("")
+                    filesizeItem = QTableWidgetItem("")
                     self.ui.tableWidget.setItem(i, TableHeaders.index("Filename"), filenameItem)
                     self.ui.tableWidget.setItem(i, TableHeaders.index("Folder"), folderItem)
                     self.ui.tableWidget.setItem(i, TableHeaders.index("Encoder"), codecItem)
                     self.ui.tableWidget.setItem(i, TableHeaders.index("Bitrate"), bitrateItem)
                     self.ui.tableWidget.setItem(i, TableHeaders.index("Length"), lengthItem)
+                    self.ui.tableWidget.setItem(i, TableHeaders.index("Filesize"), filesizeItem)
 
                     self.statusBar().showMessage("Scanning for files: {} found".format(i))
                     
@@ -209,6 +276,10 @@ class Main(QMainWindow):
         self.ui.progressBar.setMaximum(100)
         self.ui.progressBar.setValue(0)
         self.statusBar().showMessage('Ready')
+        self.ui.goButton.setEnabled(True)
+        self.ui.clearButton.setEnabled(True)
+        self.ui.goButton.repaint
+        self.ui.clearButton.repaint
                     
     def scan_Files(self):
     # loop through table and queue scanner processes for all files
@@ -224,11 +295,17 @@ class Main(QMainWindow):
         self.ui.tableWidget.setUpdatesEnabled(True)
         #self.ui.tableWidget.setVerticalScrollBarPolicy(1)
         
-        bin = options.get('mp3guessencbin') # path to mp3guessenc binary
-        if bin == None:
-            bin = findGuessEncBin()
-        if (bin == "") or (not os.path.exists(bin)):
-            return
+        mp3guessencbin = options.get('mp3guessencbin') # path to mp3guessenc binary
+        if mp3guessencbin == None:
+            mp3guessencbin = findGuessEncBin()
+        if (mp3guessencbin == "") or (not os.path.exists(mp3guessencbin)):
+            mp3guessencbin = ""
+
+        mediainfo_bin = options.get('mediainfo_bin') # path to mediainfo binary
+        if mediainfo_bin == None:
+            mediainfo_bin = findMediaInfoBin()
+        if (mediainfo_bin == "") or (not os.path.exists(mediainfo_bin)):
+            mediainfo_bin = ""
 
         global task_count
         task_count = 0 # tasks remaining
@@ -236,13 +313,21 @@ class Main(QMainWindow):
         for i in range(0,self.ui.tableWidget.rowCount()):
             filenameItem = self.ui.tableWidget.item(i, TableHeaders.index("Filename"))
             filenameStr = filenameItem.toolTip()
+            codecItem = self.ui.tableWidget.item(i, TableHeaders.index("Encoder"))
+            codecItem.setText("Scanning...")
             
             if debug_enabled:
-                print("DEBUG: About to run process, file {}".format(filenameStr))
+                print("DEBUG: About to run process for file {}".format(filenameStr))
 
-            pool.apply_async(scanner_Thread, args=(i,filenameStr,bin,debug_enabled), callback=scanner_Finished) # queue processes
-            global task_count
-            task_count += 1
+            if fnmatch.fnmatch(filenameStr, "*.mp3") and not mp3guessencbin == "":
+                pool.apply_async(scanner_Thread, args=(i,filenameStr,mp3guessencbin,"-e",debug_enabled), callback=scanner_Finished) # queue processes
+                global task_count
+                task_count += 1
+            elif fnmatch.fnmatch(filenameStr, "*.flac") and not mediainfo_bin == "":
+                pool.apply_async(scanner_Thread, args=(i,filenameStr,mediainfo_bin,"-",debug_enabled), callback=scanner_Finished) # queue processes
+                global task_count
+                task_count += 1
+                
             QApplication.processEvents()
             
         pool.close()
@@ -255,12 +340,20 @@ class Main(QMainWindow):
             error_status = song_info['error']
             if not error_status:
                 codecItem = self.ui.tableWidget.item(row, TableHeaders.index("Encoder"))
-                codecItem.setText(song_info['encoder'])
+                encoder_string = song_info['encoder_string']
+                encoder = song_info['encoder']
+                if not encoder_string == "":
+                    codecItem.setText(encoder_string)
+                else:
+                    codecItem.setText(encoder)
+                    
                 codecItem.setToolTip(scanner_output)
                 bitrateItem = self.ui.tableWidget.item(row, TableHeaders.index("Bitrate"))
                 bitrateItem.setText(song_info['bitrate'])
                 lengthItem = self.ui.tableWidget.item(row, TableHeaders.index("Length"))
                 lengthItem.setText(song_info['length'])
+                filesizeItem = self.ui.tableWidget.item(row, TableHeaders.index("Filesize"))
+                filesizeItem.setText(song_info['filesize'])
             else:
                 codecItem = self.ui.tableWidget.item(row, TableHeaders.index("Encoder"))
                 codecItem.setText("error scanning file")
