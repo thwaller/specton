@@ -21,12 +21,18 @@
   </property>
   <property name="windowIcon">
    <iconset>
-    <normaloff>icons/Freq.png</normaloff>icons/Freq.png</iconset>
+    <normaloff>icons/017-headphones.png</normaloff>icons/017-headphones.png</iconset>
+  </property>
+  <property name="iconSize">
+   <size>
+    <width>16</width>
+    <height>16</height>
+   </size>
   </property>
   <widget class="QWidget" name="centralwidget">
    <layout class="QGridLayout" name="gridLayout">
     <item row="0" column="0">
-     <layout class="QVBoxLayout" name="verticalLayout" stretch="0,0,0,0,0">
+     <layout class="QVBoxLayout" name="verticalLayout" stretch="0,0,0">
       <property name="spacing">
        <number>8</number>
       </property>
@@ -92,38 +98,6 @@
         </property>
        </widget>
       </item>
-      <item>
-       <widget class="QPushButton" name="clearButton">
-        <property name="sizePolicy">
-         <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-          <horstretch>0</horstretch>
-          <verstretch>0</verstretch>
-         </sizepolicy>
-        </property>
-        <property name="layoutDirection">
-         <enum>Qt::LeftToRight</enum>
-        </property>
-        <property name="autoFillBackground">
-         <bool>false</bool>
-        </property>
-        <property name="text">
-         <string>Clear List</string>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QPushButton" name="goButton">
-        <property name="sizePolicy">
-         <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-          <horstretch>0</horstretch>
-          <verstretch>0</verstretch>
-         </sizepolicy>
-        </property>
-        <property name="text">
-         <string>Scan</string>
-        </property>
-       </widget>
-      </item>
      </layout>
     </item>
    </layout>
@@ -152,8 +126,8 @@
    </property>
    <property name="iconSize">
     <size>
-     <width>64</width>
-     <height>64</height>
+     <width>48</width>
+     <height>48</height>
     </size>
    </property>
    <property name="toolButtonStyle">
@@ -168,7 +142,64 @@
    <attribute name="toolBarBreak">
     <bool>false</bool>
    </attribute>
+   <addaction name="actionFolder_Select"/>
+   <addaction name="separator"/>
+   <addaction name="actionScan_Files"/>
+   <addaction name="separator"/>
+   <addaction name="actionStop"/>
+   <addaction name="separator"/>
+   <addaction name="actionClear_Filelist"/>
   </widget>
+  <action name="actionScan_Files">
+   <property name="icon">
+    <iconset>
+     <normalon>icons/285-play3.png</normalon>
+    </iconset>
+   </property>
+   <property name="text">
+    <string>Scan Files</string>
+   </property>
+   <property name="toolTip">
+    <string>Scan Files</string>
+   </property>
+  </action>
+  <action name="actionStop">
+   <property name="icon">
+    <iconset>
+     <normaloff>icons/287-stop2.png</normaloff>icons/287-stop2.png</iconset>
+   </property>
+   <property name="text">
+    <string>Stop</string>
+   </property>
+  </action>
+  <action name="actionFolder_Select">
+   <property name="icon">
+    <iconset>
+     <normaloff>icons/049-folder-open.png</normaloff>icons/049-folder-open.png</iconset>
+   </property>
+   <property name="text">
+    <string>Folder Select</string>
+   </property>
+  </action>
+  <action name="actionClear_Filelist">
+   <property name="icon">
+    <iconset>
+     <normaloff>icons/102-undo.png</normaloff>icons/102-undo.png</iconset>
+   </property>
+   <property name="text">
+    <string>Clear Filelist</string>
+   </property>
+  </action>
+  <action name="actionExit">
+   <property name="text">
+    <string>Exit</string>
+   </property>
+  </action>
+  <action name="actionAbout">
+   <property name="text">
+    <string>About</string>
+   </property>
+  </action>
  </widget>
  <resources/>
  <connections/>

@@ -193,35 +193,21 @@ class Main(QMainWindow):
         self.ui = form_class()
         self.ui.setupUi(self)
 
-        def set_Action(owner,icon,menu_entry,shortcut,status_tip,connect):
-            Action = QAction(owner)
-            Action.setShortcut(shortcut)
-            Action.setStatusTip(status_tip)
-            Action.setIcon(QtGui.QIcon(icon))
-            Action.setText(menu_entry)
-            Action.triggered.connect(connect)
-            return Action
-
-        exitAction = set_Action(self,'exit.png','&Exit','Ctrl+Q','Exit application',sys.exit)
-        selectFolderAction = set_Action(self,'icons/Folders.png','&Open Directory','Ctrl+O','Add audio files from directory',self.select_Folder)
-        aboutAction = set_Action(self,'about.png','About','','',self.about_Dlg)
-
+        self.ui.actionExit.triggered.connect(sys.exit)
+        self.ui.actionScan_Files.triggered.connect(self.scan_Files)
+        self.ui.actionFolder_Select.triggered.connect(self.select_Folder)
+        self.ui.actionClear_Filelist.triggered.connect(self.clear_List)
+            
         fileMenu = self.ui.menubar.addMenu('&File')
-        fileMenu.addAction(selectFolderAction)
-        fileMenu.addAction(exitAction)
+        fileMenu.addAction(self.ui.actionFolder_Select)
+        fileMenu.addAction(self.ui.actionExit)
         helpMenu = self.ui.menubar.addMenu('&Help')
-        helpMenu.addAction(aboutAction)
+        helpMenu.addAction(self.ui.actionAbout)
 
-        self.ui.toolBar.addAction(selectFolderAction)
-		
         self.ui.tableWidget.setColumnCount(len(TableHeaders))
         self.ui.tableWidget.setHorizontalHeaderLabels(TableHeaders)
         self.ui.tableWidget.horizontalHeader().resizeSection(TableHeaders.index("Filename"),300)
         
-        # connect signals
-        self.ui.goButton.clicked.connect(self.scan_Files)
-        self.ui.clearButton.clicked.connect(self.clear_List)
-    	
     def select_Folder(self):
         directory = str(QFileDialog.getExistingDirectory(self, "Select Directory to Scan", os.path.expanduser("~")))
         
@@ -240,10 +226,8 @@ class Main(QMainWindow):
         self.ui.tableWidget.setUpdatesEnabled(False)
         self.ui.progressBar.setMinimum(0)
         self.ui.progressBar.setMaximum(0)
-        self.ui.goButton.setEnabled(False)
-        self.ui.clearButton.setEnabled(False)
-        self.ui.goButton.repaint
-        self.ui.clearButton.repaint
+        self.ui.actionScan_Files.setEnabled(False)
+        self.ui.actionClear_Filelist.setEnabled(False)
         
         # walk through directory chosen by user
         # and add filenames to treeview
@@ -253,7 +237,9 @@ class Main(QMainWindow):
                     i = self.ui.tableWidget.rowCount()
                     self.ui.tableWidget.insertRow(i)
                     filenameItem = QTableWidgetItem(name)
-                    filenameItem.setToolTip(os.path.join(root, name))
+                    filenameStr = os.path.join(root, name)
+                    filenameItem.setToolTip(filenameStr)
+                    filenameItem.setData(33, filenameStr)
                     codecItem = QTableWidgetItem("Not scanned")
                     folderItem = QTableWidgetItem(os.path.basename(root))
                     folderItem.setToolTip(root)
@@ -276,24 +262,20 @@ class Main(QMainWindow):
         self.ui.progressBar.setMaximum(100)
         self.ui.progressBar.setValue(0)
         self.statusBar().showMessage('Ready')
-        self.ui.goButton.setEnabled(True)
-        self.ui.clearButton.setEnabled(True)
-        self.ui.goButton.repaint
-        self.ui.clearButton.repaint
+        self.ui.actionScan_Files.setEnabled(True)
+        self.ui.actionClear_Filelist.setEnabled(True)
                     
     def scan_Files(self):
     # loop through table and queue scanner processes for all files
-        self.ui.goButton.setEnabled(False)
-        self.ui.clearButton.setEnabled(False)
-        self.ui.goButton.repaint
-        self.ui.clearButton.repaint
+        self.ui.actionScan_Files.setEnabled(False)
+        self.ui.actionClear_Filelist.setEnabled(False)
+        self.ui.actionFolder_Select.setEnabled(False)
         
         numproc = options.getint('processes') # number of scanner processes to run, default = # of cpus
         pool = Pool(processes=numproc)
         
         self.ui.tableWidget.setSortingEnabled(False) # prevent row numbers changing
         self.ui.tableWidget.setUpdatesEnabled(True)
-        #self.ui.tableWidget.setVerticalScrollBarPolicy(1)
         
         mp3guessencbin = options.get('mp3guessencbin') # path to mp3guessenc binary
         if mp3guessencbin == None:
@@ -312,21 +294,25 @@ class Main(QMainWindow):
 
         for i in range(0,self.ui.tableWidget.rowCount()):
             filenameItem = self.ui.tableWidget.item(i, TableHeaders.index("Filename"))
-            filenameStr = filenameItem.toolTip()
-            codecItem = self.ui.tableWidget.item(i, TableHeaders.index("Encoder"))
-            codecItem.setText("Scanning...")
+#            filenameStr = filenameItem.toolTip()
+            filenameStr = filenameItem.data(33) # filename
+            fileScanned = filenameItem.data(32) # boolean, true if file already scanned
             
-            if debug_enabled:
-                print("DEBUG: About to run process for file {}".format(filenameStr))
+            if not fileScanned:
+                codecItem = self.ui.tableWidget.item(i, TableHeaders.index("Encoder"))
+                codecItem.setText("Scanning...")
+            
+                if debug_enabled:
+                    print("DEBUG: About to run process for file {}".format(filenameStr))
 
-            if fnmatch.fnmatch(filenameStr, "*.mp3") and not mp3guessencbin == "":
-                pool.apply_async(scanner_Thread, args=(i,filenameStr,mp3guessencbin,"-e",debug_enabled), callback=scanner_Finished) # queue processes
-                global task_count
-                task_count += 1
-            elif fnmatch.fnmatch(filenameStr, "*.flac") and not mediainfo_bin == "":
-                pool.apply_async(scanner_Thread, args=(i,filenameStr,mediainfo_bin,"-",debug_enabled), callback=scanner_Finished) # queue processes
-                global task_count
-                task_count += 1
+                if fnmatch.fnmatch(filenameStr, "*.mp3") and not mp3guessencbin == "":
+                    pool.apply_async(scanner_Thread, args=(i,filenameStr,mp3guessencbin,"-e",debug_enabled), callback=scanner_Finished) # queue processes
+#                    global task_count
+                    task_count += 1
+                elif fnmatch.fnmatch(filenameStr, "*.flac") and not mediainfo_bin == "":
+                    pool.apply_async(scanner_Thread, args=(i,filenameStr,mediainfo_bin,"-",debug_enabled), callback=scanner_Finished) # queue processes
+#                    global task_count
+                    task_count += 1
                 
             QApplication.processEvents()
             
@@ -339,6 +325,8 @@ class Main(QMainWindow):
         # update table with info from scanner
             error_status = song_info['error']
             if not error_status:
+                filenameItem = self.ui.tableWidget.item(row, TableHeaders.index("Filename"))
+                filenameItem.setData(32, True)
                 codecItem = self.ui.tableWidget.item(row, TableHeaders.index("Encoder"))
                 encoder_string = song_info['encoder_string']
                 encoder = song_info['encoder']
@@ -359,7 +347,6 @@ class Main(QMainWindow):
                 codecItem.setText("error scanning file")
                 codecItem.setToolTip(scanner_output)
             
-            #self.ui.tableWidget.repaint(self.ui.tableWidget.visualItemRect(codecItem))
             QApplication.processEvents()
 
         self.statusBar().showMessage('Scanning files...')
@@ -368,7 +355,7 @@ class Main(QMainWindow):
             tasks_done = task_total - task_count
             self.ui.progressBar.setValue(round((tasks_done/task_total)*100))
             QApplication.processEvents()
-            time.sleep(0.01)
+            time.sleep(0.025)
 
             if not main_q.empty():
             # scanner processes add results to main_q when finished
@@ -391,12 +378,10 @@ class Main(QMainWindow):
                            
         self.ui.progressBar.setValue(100)
         self.statusBar().showMessage('Done')
-        self.ui.goButton.setEnabled(True)
-        self.ui.clearButton.setEnabled(True)
+        self.ui.actionScan_Files.setEnabled(True)
+        self.ui.actionClear_Filelist.setEnabled(True)
+        self.ui.actionFolder_Select.setEnabled(True)
         self.ui.tableWidget.setSortingEnabled(True)
-        #self.ui.tableWidget.setVerticalScrollBarPolicy(0)
-        self.ui.goButton.repaint
-        self.ui.clearButton.repaint
             
     def clear_List(self):
         self.ui.progressBar.setValue(0)
@@ -407,7 +392,7 @@ class Main(QMainWindow):
         pass
 
 if __name__ == '__main__':
-	app = QApplication(sys.argv)
-	main = Main()
-	main.show()
-	sys.exit(app.exec_())
+    app = QApplication(sys.argv)
+    main = Main()
+    main.show()
+    sys.exit(app.exec_())
