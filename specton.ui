@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>930</width>
-    <height>820</height>
+    <width>807</width>
+    <height>691</height>
    </rect>
   </property>
   <property name="sizePolicy">
@@ -43,12 +43,18 @@
        <widget class="QTableWidget" name="tableWidget">
         <property name="minimumSize">
          <size>
-          <width>910</width>
-          <height>0</height>
+          <width>549</width>
+          <height>100</height>
          </size>
         </property>
-        <property name="autoFillBackground">
+        <property name="contextMenuPolicy">
+         <enum>Qt::ActionsContextMenu</enum>
+        </property>
+        <property name="acceptDrops">
          <bool>true</bool>
+        </property>
+        <property name="autoFillBackground">
+         <bool>false</bool>
         </property>
         <property name="editTriggers">
          <set>QAbstractItemView::NoEditTriggers</set>
@@ -58,6 +64,9 @@
         </property>
         <property name="alternatingRowColors">
          <bool>true</bool>
+        </property>
+        <property name="selectionBehavior">
+         <enum>QAbstractItemView::SelectRows</enum>
         </property>
         <property name="sortingEnabled">
          <bool>true</bool>
@@ -87,7 +96,7 @@
       <item>
        <widget class="QLabel" name="label">
         <property name="text">
-         <string>Drag MP3 files or folders into box above then click scan</string>
+         <string>Drag audio files or folders into box above then click scan</string>
         </property>
        </widget>
       </item>
@@ -107,7 +116,7 @@
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>930</width>
+     <width>807</width>
      <height>21</height>
     </rect>
    </property>
@@ -121,6 +130,9 @@
    </property>
   </widget>
   <widget class="QToolBar" name="toolBar">
+   <property name="contextMenuPolicy">
+    <enum>Qt::NoContextMenu</enum>
+   </property>
    <property name="windowTitle">
     <string>toolBar</string>
    </property>
