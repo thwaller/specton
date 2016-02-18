@@ -32,7 +32,7 @@ import time
 import queue
 import io
 from functools import partial
-import hashlib
+import hashlib, zlib
 
 dataScanned=32
 dataFilenameStr=33
@@ -49,7 +49,7 @@ if __name__ == '__main__':
     settings = QSettings(QSettings.IniFormat,QSettings.UserScope,"Specton","Specton-settings")
     filecache = QSettings(QSettings.IniFormat,QSettings.UserScope,"Specton","Specton-cache")
         
-    debug_enabled = settings.value("Options/debug", False)
+    debug_enabled = settings.value("Options/debug", False, type=bool)
     stop_tasks = False
 
 def findGuessEncBin():
@@ -301,9 +301,9 @@ class Main(QMainWindow):
         filemask = settings.value('Options/FilemaskRegEx',r"\.mp3$|\.flac$|\.mpc$|\.ogg$|\.wav$|\.m4a$|\.aac$|\.ac3$|\.ra$|\.au$")
         filemask_regex = re.compile(filemask,re.IGNORECASE)
 
-        followsymlinks = settings.value('Options/FollowSymlinks',False)
-        recursedirectories = settings.value('Options/RecurseDirectories',True)
-        clearfilelist = settings.value('Options/ClearFilelist',True)
+        followsymlinks = settings.value('Options/FollowSymlinks',False, type=bool)
+        recursedirectories = settings.value('Options/RecurseDirectories',True, type=bool)
+        clearfilelist = settings.value('Options/ClearFilelist',True, type=bool)
         
         if clearfilelist:
             self.clear_List()
@@ -333,7 +333,7 @@ class Main(QMainWindow):
                     lengthItem = QTableWidgetItem("")
                     filesizeItem = QTableWidgetItem("")
                     
-                    if settings.value('Options/UseCache',True) == True:
+                    if settings.value('Options/UseCache',True, type=bool) == True:
                         hashStr = filenameStr + str(os.path.getmtime(filenameStr))
                         filemd5 = md5Str(hashStr)
                         if not filecache.value('{}/Encoder'.format(filemd5)) == None:
@@ -341,6 +341,11 @@ class Main(QMainWindow):
                             bitrateItem.setText(filecache.value('{}/Bitrate'.format(filemd5)))
                             lengthItem.setText(filecache.value('{}/Length'.format(filemd5)))
                             filesizeItem.setText(filecache.value('{}/Filesize'.format(filemd5)))
+                            cached_output = filecache.value('{}/RawOutput'.format(filemd5))
+                            if cached_output is not None:
+                                scanner_output = zlib.decompress(cached_output)
+                                codecItem.setToolTip(scanner_output.decode('utf-8'))
+
                             filenameItem.setData(dataScanned, True) # previously scanned
                     
                     self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Filename"), filenameItem)
@@ -375,7 +380,7 @@ class Main(QMainWindow):
         self.ui.actionClear_Filelist.setEnabled(False)
         self.ui.actionFolder_Select.setEnabled(False)
         
-        numproc = settings.value('Options/processes',-1) # number of scanner processes to run, default = # of cpus
+        numproc = settings.value('Options/processes',-1, type=int) # number of scanner processes to run, default = # of cpus
         if numproc == -1:
             numproc = None
         pool = Pool(processes=numproc)
@@ -457,7 +462,7 @@ class Main(QMainWindow):
                 filesizeItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Filesize"))
                 filesizeItem.setText(song_info['filesize'])
 
-                if settings.value('Options/UseCache',True) == True:
+                if settings.value('Options/UseCache',True, type=bool) == True:
                     filenameStr = filenameItem.data(dataFilenameStr)
                     hashStr = filenameStr + str(os.path.getmtime(filenameStr))
                     filemd5 = md5Str(hashStr)
@@ -465,6 +470,8 @@ class Main(QMainWindow):
                     filecache.setValue('{}/Bitrate'.format(filemd5),bitrateItem.text())
                     filecache.setValue('{}/Length'.format(filemd5),lengthItem.text())
                     filecache.setValue('{}/Filesize'.format(filemd5),filesizeItem.text())
+                    if settings.value('Options/CacheRawOutput',False, type=bool) == True:
+                        filecache.setValue('{}/RawOutput'.format(filemd5),zlib.compress(scanner_output.encode('utf-8')))
 
             else:
                 codecItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Encoder"))
