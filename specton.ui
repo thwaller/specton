@@ -215,6 +215,11 @@
     <string>About</string>
    </property>
   </action>
+  <action name="actionOptions">
+   <property name="text">
+    <string>Options</string>
+   </property>
+  </action>
  </widget>
  <resources/>
  <connections/>

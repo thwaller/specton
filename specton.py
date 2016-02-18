@@ -4,7 +4,7 @@
 #    Copyright (C) 2016 D. Bird <somesortoferror@gmail.com>
 #    https://github.com/somesortoferror/specton
 
-version = 0.12
+version = 0.13
 
 #    This program is free software: you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -32,6 +32,10 @@ import time
 import queue
 import io
 from functools import partial
+import hashlib
+
+dataScanned=32
+dataFilenameStr=33
 
 if os.name == 'nt':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer,sys.stdout.encoding,'backslashreplace') # fix for printing utf8 strings on windows
@@ -42,7 +46,8 @@ if __name__ == '__main__':
 if __name__ == '__main__':
     form_class = uic.loadUiType("specton.ui")[0]                 # Load the UI
 
-    settings = QSettings(QSettings.IniFormat,QSettings.UserScope,"Cognito","Specton")
+    settings = QSettings(QSettings.IniFormat,QSettings.UserScope,"Specton","Specton-settings")
+    filecache = QSettings(QSettings.IniFormat,QSettings.UserScope,"Specton","Specton-cache")
         
     debug_enabled = settings.value("Options/debug", False)
     stop_tasks = False
@@ -160,6 +165,8 @@ def parse_mediainfo_output(mediainfo_output):
 
     return {'encoder':encoder, 'audio_format':audio_format, 'bitrate':bitrate ,'encoder_string':encoder_string, 'length':length, 'filesize':filesize, 'checks_ok':checks_ok, 'error':False }
     
+def md5Str(Str):
+    return hashlib.md5(Str.encode('utf-8')).hexdigest()
     
 def scanner_Finished(fileinfo):
 # callback function
@@ -212,6 +219,8 @@ class Main(QMainWindow):
         fileMenu = self.ui.menubar.addMenu('&File')
         fileMenu.addAction(self.ui.actionFolder_Select)
         fileMenu.addAction(self.ui.actionExit)
+        editMenu = self.ui.menubar.addMenu('&Edit')
+        editMenu.addAction(self.ui.actionOptions)
         helpMenu = self.ui.menubar.addMenu('&Help')
         helpMenu.addAction(self.ui.actionAbout)
 
@@ -245,6 +254,9 @@ class Main(QMainWindow):
             viewInfoAction = QAction("View Info",menu)
             viewInfoAction.triggered.connect(partial(self.contextViewInfo,row))
             menu.addAction(viewInfoAction)
+            rescanFileAction = QAction("Scan File",menu)
+            rescanFileAction.triggered.connect(partial(self.contextRescanFile,row))
+            menu.addAction(rescanFileAction)
             playFileAction = QAction("Play File",menu)
             playFileAction.triggered.connect(partial(self.contextPlayFile,row))
             menu.addAction(playFileAction)
@@ -266,6 +278,11 @@ class Main(QMainWindow):
         
         event.accept()        
     
+    def contextRescanFile(self, row):
+        filenameItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Filename"))
+        filenameItem.setData(dataScanned, False)
+        self.scan_Files(True,[filenameItem.data(dataFilenameStr)])
+        
     def contextViewInfo(self, row):
         pass
 
@@ -286,6 +303,10 @@ class Main(QMainWindow):
 
         followsymlinks = settings.value('Options/FollowSymlinks',False)
         recursedirectories = settings.value('Options/RecurseDirectories',True)
+        clearfilelist = settings.value('Options/ClearFilelist',True)
+        
+        if clearfilelist:
+            self.clear_List()
 
         self.ui.tableWidget.setUpdatesEnabled(False)
         self.ui.tableWidget.setSortingEnabled(False)
@@ -304,20 +325,31 @@ class Main(QMainWindow):
                     filenameItem = QTableWidgetItem(name)
                     filenameStr = os.path.join(root, name)
                     filenameItem.setToolTip(filenameStr)
-                    filenameItem.setData(33, filenameStr)
+                    filenameItem.setData(dataFilenameStr, filenameStr)
                     codecItem = QTableWidgetItem("Not scanned")
                     folderItem = QTableWidgetItem(os.path.basename(root))
                     folderItem.setToolTip(root)
                     bitrateItem = QTableWidgetItem("")
                     lengthItem = QTableWidgetItem("")
                     filesizeItem = QTableWidgetItem("")
+                    
+                    if settings.value('Options/UseCache',True) == True:
+                        hashStr = filenameStr + str(os.path.getmtime(filenameStr))
+                        filemd5 = md5Str(hashStr)
+                        if not filecache.value('{}/Encoder'.format(filemd5)) == None:
+                            codecItem.setText(filecache.value('{}/Encoder'.format(filemd5)))
+                            bitrateItem.setText(filecache.value('{}/Bitrate'.format(filemd5)))
+                            lengthItem.setText(filecache.value('{}/Length'.format(filemd5)))
+                            filesizeItem.setText(filecache.value('{}/Filesize'.format(filemd5)))
+                            filenameItem.setData(dataScanned, True) # previously scanned
+                    
                     self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Filename"), filenameItem)
                     self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Folder"), folderItem)
                     self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Encoder"), codecItem)
                     self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Bitrate"), bitrateItem)
                     self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Length"), lengthItem)
                     self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Filesize"), filesizeItem)
-
+                                                      
                     self.statusBar().showMessage("Scanning for files: {} found".format(i))
                     
                     QApplication.processEvents()
@@ -336,8 +368,9 @@ class Main(QMainWindow):
             global stop_tasks
             stop_tasks = True
     
-    def scan_Files(self):
+    def scan_Files(self,checked,filelist=None):
     # loop through table and queue scanner processes for all files
+    # filelist - optional list of files to scan, all others will be skipped
         self.ui.actionScan_Files.setEnabled(False)
         self.ui.actionClear_Filelist.setEnabled(False)
         self.ui.actionFolder_Select.setEnabled(False)
@@ -364,11 +397,16 @@ class Main(QMainWindow):
 
         global task_count
         task_count = 0 # tasks remaining
-
+        
         for i in range(0,self.ui.tableWidget.rowCount()):
             filenameItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget,"Filename"))
-            filenameStr = filenameItem.data(33) # filename
-            fileScanned = filenameItem.data(32) # boolean, true if file already scanned
+            filenameStr = filenameItem.data(dataFilenameStr) # filename
+            
+            if filelist is not None:
+                if filelist.count(filenameStr) == 0:
+                    continue
+            
+            fileScanned = filenameItem.data(dataScanned) # boolean, true if file already scanned
             
             if not fileScanned:
 #                codecItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget,"Encoder"))
@@ -398,7 +436,7 @@ class Main(QMainWindow):
             error_status = song_info['error']
             if not error_status:
                 filenameItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Filename"))
-                filenameItem.setData(32, True)
+                filenameItem.setData(dataScanned, True) # boolean, true if file already scanned
                 codecItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Encoder"))
                 encoder_string = song_info['encoder_string']
                 encoder = song_info['encoder']
@@ -418,6 +456,16 @@ class Main(QMainWindow):
                 lengthItem.setText(song_info['length'])
                 filesizeItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Filesize"))
                 filesizeItem.setText(song_info['filesize'])
+
+                if settings.value('Options/UseCache',True) == True:
+                    filenameStr = filenameItem.data(dataFilenameStr)
+                    hashStr = filenameStr + str(os.path.getmtime(filenameStr))
+                    filemd5 = md5Str(hashStr)
+                    filecache.setValue('{}/Encoder'.format(filemd5),codecItem.text())
+                    filecache.setValue('{}/Bitrate'.format(filemd5),bitrateItem.text())
+                    filecache.setValue('{}/Length'.format(filemd5),lengthItem.text())
+                    filecache.setValue('{}/Filesize'.format(filemd5),filesizeItem.text())
+
             else:
                 codecItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Encoder"))
                 codecItem.setText("error scanning file")
