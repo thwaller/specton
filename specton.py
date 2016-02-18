@@ -4,7 +4,7 @@
 #    Copyright (C) 2016 D. Bird <somesortoferror@gmail.com>
 #    https://github.com/somesortoferror/specton
 
-version = 0.11
+version = 0.12
 
 #    This program is free software: you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -20,18 +20,18 @@ version = 0.11
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import sys
-from PyQt5.QtWidgets import QApplication, QDialog, QMainWindow, QAction, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox
+from PyQt5.QtWidgets import QApplication, QDialog, QMainWindow, QAction, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox, QMenu
 from PyQt5 import uic
-from PyQt5.QtCore import QByteArray
+from PyQt5.QtCore import QByteArray, Qt, QSettings
 import os.path
 from os import walk
 import fnmatch, re
-import configparser
 import subprocess
 from multiprocessing import Pool, Process
 import time
 import queue
 import io
+from functools import partial
 
 if os.name == 'nt':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer,sys.stdout.encoding,'backslashreplace') # fix for printing utf8 strings on windows
@@ -42,16 +42,9 @@ if __name__ == '__main__':
 if __name__ == '__main__':
     form_class = uic.loadUiType("specton.ui")[0]                 # Load the UI
 
-    config = configparser.ConfigParser(allow_no_value = True)
-    config.read('specton.ini') # Load config file
-
-    try:
-        options = config['Options']
-    except:
-        config['Options'] = {}
-        options = config['Options']
-    
-    debug_enabled = options.getboolean('Debug', False)
+    settings = QSettings(QSettings.IniFormat,QSettings.UserScope,"Cognito","Specton")
+        
+    debug_enabled = settings.value("Options/debug", False)
     stop_tasks = False
 
 def findGuessEncBin():
@@ -202,7 +195,6 @@ def headerIndexByName(table,headerName):
             index = i
     return index
 
-
 class Main(QMainWindow):
     def __init__(self):
         super(Main, self).__init__()
@@ -228,55 +220,75 @@ class Main(QMainWindow):
         self.ui.tableWidget.horizontalHeader().resizeSection(headerIndexByName(self.ui.tableWidget,"Filename"),300)
         self.ui.tableWidget.horizontalHeader().setSectionsMovable(True)
         
-        playFileAction = QAction("Play File",None)
-        playFileAction.triggered.connect(self.contextPlayFile)
-        self.ui.tableWidget.addAction(playFileAction)
-
-        browseFolderAction = QAction("Browse Folder",None)
-        browseFolderAction.triggered.connect(self.contextBrowseFolder)
-        self.ui.tableWidget.addAction(browseFolderAction)
+        self.ui.tableWidget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.ui.tableWidget.customContextMenuRequested.connect(self.tableContextMenu)
         
-        windowStateStr = options.get('windowState')
-        windowGeometryStr = options.get('windowGeometry')
-        if windowStateStr is not None:
-            windowState = QByteArray.fromBase64(QByteArray().append(windowStateStr))
+        windowState = settings.value("State/windowState")
+        windowGeometry = settings.value("State/windowGeometry")
+        tableGeometry = settings.value("State/tableGeometry")
+        tableHeaderState = settings.value("State/tableHeaderState")
+        
+        if windowState is not None:
             self.restoreState(windowState)
-        if windowGeometryStr is not None:
-            windowGeometry = QByteArray.fromBase64(QByteArray().append(windowGeometryStr))
+        if windowGeometry is not None:
             self.restoreGeometry(windowGeometry)
+        if tableGeometry is not None:
+            self.ui.tableWidget.restoreGeometry(tableGeometry)
+        if tableHeaderState is not None:
+            self.ui.tableWidget.horizontalHeader().restoreState(tableHeaderState)
+            self.ui.tableWidget.sortByColumn(-1,Qt.AscendingOrder)
 
-            
+    def tableContextMenu(self, point):
+        row = self.ui.tableWidget.rowAt(point.y())
+        if not row == -1:
+            menu = QMenu(self)
+            viewInfoAction = QAction("View Info",menu)
+            viewInfoAction.triggered.connect(partial(self.contextViewInfo,row))
+            menu.addAction(viewInfoAction)
+            playFileAction = QAction("Play File",menu)
+            playFileAction.triggered.connect(partial(self.contextPlayFile,row))
+            menu.addAction(playFileAction)
+            browseFolderAction = QAction("Browse Folder",menu)
+            browseFolderAction.triggered.connect(partial(self.contextBrowseFolder,row))
+            menu.addAction(browseFolderAction)
+            menu.popup(self.ui.tableWidget.viewport().mapToGlobal(point))    
+    
     def closeEvent(self,event):
         windowState = self.saveState()
         windowGeometry = self.saveGeometry()
-        config['Options']['windowState'] = str(windowState.toBase64())
-        config['Options']['windowGeometry'] = str(windowGeometry.toBase64())
-        with open('specton.ini', 'w') as configfile:
-            config.write(configfile)            
+        tableGeometry = self.ui.tableWidget.saveGeometry()
+        tableHeaderState = self.ui.tableWidget.horizontalHeader().saveState()
+        
+        settings.setValue("State/windowState",windowState)
+        settings.setValue("State/windowGeometry",windowGeometry)
+        settings.setValue("State/tableGeometry",tableGeometry)
+        settings.setValue("State/tableHeaderState",tableHeaderState)
+        
         event.accept()        
     
-    def contextPlayFile(self):
+    def contextViewInfo(self, row):
         pass
 
-    def contextBrowseFolder(self):
+    def contextPlayFile(self, row):
         pass
+
+    def contextBrowseFolder(self, row):
+        folderItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Folder"))
+        folderName = folderItem.toolTip()
+        if os.name == 'nt':
+            subprocess.Popen("explorer \"" + os.path.normpath(folderName) + "\"")
     
     def select_Folder(self):
         directory = str(QFileDialog.getExistingDirectory(self, "Select Directory to Scan", os.path.expanduser("~")))
         
-        filemask = options.get('FilemaskRegEx')
-        if filemask == None:
-            filemask = "\.mp3$|\.flac$|\.mpc$|\.ogg$|\.wav$|\.m4a$|\.aac$|\.ac3$|\.ra$|\.au$"
+        filemask = settings.value('Options/FilemaskRegEx',r"\.mp3$|\.flac$|\.mpc$|\.ogg$|\.wav$|\.m4a$|\.aac$|\.ac3$|\.ra$|\.au$")
         filemask_regex = re.compile(filemask,re.IGNORECASE)
 
-        followsymlinks = options.getboolean('FollowSymlinks')
-        if followsymlinks == None:
-            followsymlinks = False
-        recursedirectories = options.getboolean('RecurseDirectories')
-        if recursedirectories == None:
-            recursedirectories = False
+        followsymlinks = settings.value('Options/FollowSymlinks',False)
+        recursedirectories = settings.value('Options/RecurseDirectories',True)
 
         self.ui.tableWidget.setUpdatesEnabled(False)
+        self.ui.tableWidget.setSortingEnabled(False)
         self.ui.progressBar.setMinimum(0)
         self.ui.progressBar.setMaximum(0)
         self.ui.actionScan_Files.setEnabled(False)
@@ -311,6 +323,7 @@ class Main(QMainWindow):
                     QApplication.processEvents()
 
         self.ui.tableWidget.setUpdatesEnabled(True)
+        self.ui.tableWidget.setSortingEnabled(True)
         self.ui.progressBar.setMinimum(0)
         self.ui.progressBar.setMaximum(100)
         self.ui.progressBar.setValue(0)
@@ -329,19 +342,21 @@ class Main(QMainWindow):
         self.ui.actionClear_Filelist.setEnabled(False)
         self.ui.actionFolder_Select.setEnabled(False)
         
-        numproc = options.getint('processes') # number of scanner processes to run, default = # of cpus
+        numproc = settings.value('Options/processes',-1) # number of scanner processes to run, default = # of cpus
+        if numproc == -1:
+            numproc = None
         pool = Pool(processes=numproc)
         
         self.ui.tableWidget.setSortingEnabled(False) # prevent row numbers changing
         self.ui.tableWidget.setUpdatesEnabled(True)
         
-        mp3guessencbin = options.get('mp3guessencbin') # path to mp3guessenc binary
+        mp3guessencbin = settings.value('Paths/mp3guessenc_bin') # path to mp3guessenc binary
         if mp3guessencbin == None:
             mp3guessencbin = findGuessEncBin()
         if (mp3guessencbin == "") or (not os.path.exists(mp3guessencbin)):
             mp3guessencbin = ""
 
-        mediainfo_bin = options.get('mediainfo_bin') # path to mediainfo binary
+        mediainfo_bin = settings.value('Paths/mediainfo_bin') # path to mediainfo binary
         if mediainfo_bin == None:
             mediainfo_bin = findMediaInfoBin()
         if (mediainfo_bin == "") or (not os.path.exists(mediainfo_bin)):
