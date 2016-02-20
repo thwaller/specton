@@ -20,7 +20,7 @@ version = 0.13
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import sys
-from PyQt5.QtWidgets import QApplication, QDialog, QMainWindow, QAction, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox, QMenu
+from PyQt5.QtWidgets import QApplication, QDialog, QMainWindow, QAction, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox, QMenu, QLineEdit,QCheckBox,QSpinBox
 from PyQt5 import uic
 from PyQt5.QtCore import QByteArray, Qt, QSettings
 import os.path
@@ -45,30 +45,35 @@ if __name__ == '__main__':
 
 if __name__ == '__main__':
     form_class = uic.loadUiType("specton.ui")[0]                 # Load the UI
+    options_class = uic.loadUiType("options.ui")[0]
 
     settings = QSettings(QSettings.IniFormat,QSettings.UserScope,"Specton","Specton-settings")
     filecache = QSettings(QSettings.IniFormat,QSettings.UserScope,"Specton","Specton-cache")
         
-    debug_enabled = settings.value("Options/debug", False, type=bool)
+    debug_enabled = settings.value("Options/Debug", False, type=bool)
     stop_tasks = False
 
 def findGuessEncBin():
-    if os.name == 'nt':
-        bin = 'scanners/mp3guessenc.exe'
-    elif os.name == 'posix':
-        bin = '/usr/bin/mp3guessenc'
-    else:
-        bin = ''
+    bin = settings.value('Paths/mp3guessenc_bin') # path to mp3guessenc binary
+    if bin is None:
+        if os.name == 'nt':
+            bin = 'scanners/mp3guessenc.exe'
+        elif os.name == 'posix':
+            bin = '/usr/bin/mp3guessenc'
+        else:
+            bin = ''
         
     return bin
 
 def findMediaInfoBin():
-    if os.name == 'nt':
-        bin = 'scanners/MediaInfo.exe'
-    elif os.name == 'posix':
-        bin = '/usr/bin/mediainfo'
-    else:
-        bin = ''
+    bin = settings.value('Paths/mediainfo_bin') # path to mediainfo binary
+    if bin is None:
+        if os.name == 'nt':
+            bin = 'scanners/MediaInfo.exe'
+        elif os.name == 'posix':
+            bin = '/usr/bin/mediainfo'
+        else:
+            bin = ''
         
     return bin
 
@@ -202,6 +207,59 @@ def headerIndexByName(table,headerName):
             index = i
     return index
 
+class Options(QDialog):
+    def __init__(self):
+        super(Options,self).__init__()
+        self.ui = options_class()
+        self.ui.setupUi(self)
+        lineEdit_filemaskregex = self.findChild(QLineEdit, "lineEdit_filemaskregex")
+        lineEdit_filemaskregex.setText(settings.value('Options/FilemaskRegEx',r"\.mp3$|\.flac$|\.mpc$|\.ogg$|\.wav$|\.m4a$|\.aac$|\.ac3$|\.ra$|\.au$"))
+        lineEdit_mediainfo_path = self.findChild(QLineEdit, "lineEdit_mediainfo_path")
+        lineEdit_mediainfo_path.setText(findMediaInfoBin())
+        lineEdit_mp3guessenc_path = self.findChild(QLineEdit, "lineEdit_mp3guessenc_path")
+        lineEdit_mp3guessenc_path.setText(findGuessEncBin())
+        checkBox_recursive = self.findChild(QCheckBox, "checkBox_recursive")
+        checkBox_recursive.setChecked(settings.value('Options/RecurseDirectories',True, type=bool))
+        checkBox_followsymlinks = self.findChild(QCheckBox, "checkBox_followsymlinks")
+        checkBox_followsymlinks.setChecked(settings.value('Options/FollowSymlinks',False, type=bool))
+        checkBox_cache = self.findChild(QCheckBox, "checkBox_cache")
+        checkBox_cache.setChecked(settings.value('Options/UseCache',True, type=bool))
+        checkBox_cacheraw = self.findChild(QCheckBox, "checkBox_cacheraw")
+        checkBox_cacheraw.setChecked(settings.value('Options/CacheRawOutput',False, type=bool))
+        spinBox_processes = self.findChild(QSpinBox, "spinBox_processes")
+        spinBox_processes.setValue(settings.value('Options/Processes',-1, type=int))
+        checkBox_debug = self.findChild(QCheckBox, "checkBox_debug")
+        checkBox_debug.setChecked(settings.value("Options/Debug", False, type=bool))
+        checkBox_savewindowstate = self.findChild(QCheckBox, "checkBox_savewindowstate")
+        checkBox_savewindowstate.setChecked(settings.value("Options/SaveWindowState", True, type=bool))
+        checkBox_clearfilelist = self.findChild(QCheckBox, "checkBox_clearfilelist")
+        checkBox_clearfilelist.setChecked(settings.value('Options/ClearFilelist',True, type=bool))
+    
+    def accept(self):
+        lineEdit_filemaskregex = self.findChild(QLineEdit, "lineEdit_filemaskregex")
+        settings.setValue('Options/FilemaskRegEx',lineEdit_filemaskregex.text())
+        lineEdit_mediainfo_path = self.findChild(QLineEdit, "lineEdit_mediainfo_path")
+        settings.setValue('Paths/mediainfo_bin',lineEdit_mediainfo_path.text())
+        lineEdit_mp3guessenc_path = self.findChild(QLineEdit, "lineEdit_mp3guessenc_path")
+        settings.setValue('Paths/mp3guessenc_bin',lineEdit_mp3guessenc_path.text())
+        checkBox_recursive = self.findChild(QCheckBox, "checkBox_recursive")
+        settings.setValue('Options/RecurseDirectories',checkBox_recursive.isChecked())
+        checkBox_followsymlinks = self.findChild(QCheckBox, "checkBox_followsymlinks")
+        settings.setValue('Options/FollowSymlinks',checkBox_followsymlinks.isChecked())
+        checkBox_cache = self.findChild(QCheckBox, "checkBox_cache")
+        settings.setValue('Options/UseCache',checkBox_cache.isChecked())
+        checkBox_cacheraw = self.findChild(QCheckBox, "checkBox_cacheraw")
+        settings.setValue('Options/CacheRawOutput',checkBox_cacheraw.isChecked())
+        spinBox_processes = self.findChild(QSpinBox, "spinBox_processes")
+        settings.setValue('Options/Processes',spinBox_processes.value())
+        checkBox_debug = self.findChild(QCheckBox, "checkBox_debug")
+        settings.setValue('Options/Debug',checkBox_debug.isChecked())
+        checkBox_savewindowstate = self.findChild(QCheckBox, "checkBox_savewindowstate")
+        settings.setValue('Options/SaveWindowState',checkBox_savewindowstate.isChecked())
+        checkBox_clearfilelist = self.findChild(QCheckBox, "checkBox_clearfilelist")
+        settings.setValue('Options/ClearFilelist',checkBox_clearfilelist.isChecked())
+        QDialog.accept(self)
+        
 class Main(QMainWindow):
     def __init__(self):
         super(Main, self).__init__()
@@ -215,6 +273,7 @@ class Main(QMainWindow):
         self.ui.actionFolder_Select.triggered.connect(self.select_Folder)
         self.ui.actionClear_Filelist.triggered.connect(self.clear_List)
         self.ui.actionStop.triggered.connect(self.cancel_Tasks)
+        self.ui.actionOptions.triggered.connect(self.edit_Options)
             
         fileMenu = self.ui.menubar.addMenu('&File')
         fileMenu.addAction(self.ui.actionFolder_Select)
@@ -246,6 +305,11 @@ class Main(QMainWindow):
         if tableHeaderState is not None:
             self.ui.tableWidget.horizontalHeader().restoreState(tableHeaderState)
             self.ui.tableWidget.sortByColumn(-1,Qt.AscendingOrder)
+    
+    def edit_Options(self):
+        dialog = Options()
+        result = dialog.exec_()
+        dialog.show()
 
     def tableContextMenu(self, point):
         row = self.ui.tableWidget.rowAt(point.y())
@@ -266,15 +330,17 @@ class Main(QMainWindow):
             menu.popup(self.ui.tableWidget.viewport().mapToGlobal(point))    
     
     def closeEvent(self,event):
+        self.cancel_Tasks()
         windowState = self.saveState()
         windowGeometry = self.saveGeometry()
         tableGeometry = self.ui.tableWidget.saveGeometry()
         tableHeaderState = self.ui.tableWidget.horizontalHeader().saveState()
         
-        settings.setValue("State/windowState",windowState)
-        settings.setValue("State/windowGeometry",windowGeometry)
-        settings.setValue("State/tableGeometry",tableGeometry)
-        settings.setValue("State/tableHeaderState",tableHeaderState)
+        if settings.value("Options/SaveWindowState", True, type=bool):
+            settings.setValue("State/windowState",windowState)
+            settings.setValue("State/windowGeometry",windowGeometry)
+            settings.setValue("State/tableGeometry",tableGeometry)
+            settings.setValue("State/tableHeaderState",tableHeaderState)
         
         event.accept()        
     
@@ -304,23 +370,29 @@ class Main(QMainWindow):
         followsymlinks = settings.value('Options/FollowSymlinks',False, type=bool)
         recursedirectories = settings.value('Options/RecurseDirectories',True, type=bool)
         clearfilelist = settings.value('Options/ClearFilelist',True, type=bool)
+        usecache = settings.value('Options/UseCache',True, type=bool)
         
         if clearfilelist:
             self.clear_List()
 
-        self.ui.tableWidget.setUpdatesEnabled(False)
         self.ui.tableWidget.setSortingEnabled(False)
+        self.ui.tableWidget.setUpdatesEnabled(False)
         self.ui.progressBar.setMinimum(0)
         self.ui.progressBar.setMaximum(0)
         self.ui.actionScan_Files.setEnabled(False)
         self.ui.actionClear_Filelist.setEnabled(False)
+        self.ui.actionFolder_Select.setEnabled(False)
         
         # walk through directory chosen by user
         # and add filenames to treeview
+        i = 0
         for root, dirs, files in os.walk(directory, True, None, followsymlinks):
+            if not recursedirectories:
+                while len(dirs) > 0:
+                    dirs.pop()
             for name in files:
                 if filemask_regex.search(name) is not None:
-                    i = self.ui.tableWidget.rowCount()
+#                    i = self.ui.tableWidget.rowCount()
                     self.ui.tableWidget.insertRow(i)
                     filenameItem = QTableWidgetItem(name)
                     filenameStr = os.path.join(root, name)
@@ -333,7 +405,7 @@ class Main(QMainWindow):
                     lengthItem = QTableWidgetItem("")
                     filesizeItem = QTableWidgetItem("")
                     
-                    if settings.value('Options/UseCache',True, type=bool) == True:
+                    if usecache == True:
                         hashStr = filenameStr + str(os.path.getmtime(filenameStr))
                         filemd5 = md5Str(hashStr)
                         if not filecache.value('{}/Encoder'.format(filemd5)) == None:
@@ -357,6 +429,7 @@ class Main(QMainWindow):
                                                       
                     self.statusBar().showMessage("Scanning for files: {} found".format(i))
                     
+                    i += 1
                     QApplication.processEvents()
 
         self.ui.tableWidget.setUpdatesEnabled(True)
@@ -367,6 +440,7 @@ class Main(QMainWindow):
         self.statusBar().showMessage('Ready')
         self.ui.actionScan_Files.setEnabled(True)
         self.ui.actionClear_Filelist.setEnabled(True)
+        self.ui.actionFolder_Select.setEnabled(True)
                     
     def cancel_Tasks(self):
         if task_count > 0: # tasks are running
@@ -380,7 +454,7 @@ class Main(QMainWindow):
         self.ui.actionClear_Filelist.setEnabled(False)
         self.ui.actionFolder_Select.setEnabled(False)
         
-        numproc = settings.value('Options/processes',-1, type=int) # number of scanner processes to run, default = # of cpus
+        numproc = settings.value('Options/Processes',-1, type=int) # number of scanner processes to run, default = # of cpus
         if numproc == -1:
             numproc = None
         pool = Pool(processes=numproc)
@@ -388,15 +462,11 @@ class Main(QMainWindow):
         self.ui.tableWidget.setSortingEnabled(False) # prevent row numbers changing
         self.ui.tableWidget.setUpdatesEnabled(True)
         
-        mp3guessencbin = settings.value('Paths/mp3guessenc_bin') # path to mp3guessenc binary
-        if mp3guessencbin == None:
-            mp3guessencbin = findGuessEncBin()
+        mp3guessencbin = findGuessEncBin()
         if (mp3guessencbin == "") or (not os.path.exists(mp3guessencbin)):
             mp3guessencbin = ""
 
-        mediainfo_bin = settings.value('Paths/mediainfo_bin') # path to mediainfo binary
-        if mediainfo_bin == None:
-            mediainfo_bin = findMediaInfoBin()
+        mediainfo_bin = findMediaInfoBin()
         if (mediainfo_bin == "") or (not os.path.exists(mediainfo_bin)):
             mediainfo_bin = ""
 
