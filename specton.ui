@@ -66,7 +66,7 @@
          <bool>true</bool>
         </property>
         <property name="selectionMode">
-         <enum>QAbstractItemView::SingleSelection</enum>
+         <enum>QAbstractItemView::ExtendedSelection</enum>
         </property>
         <property name="selectionBehavior">
          <enum>QAbstractItemView::SelectRows</enum>
@@ -164,6 +164,9 @@
    <addaction name="actionStop"/>
    <addaction name="separator"/>
    <addaction name="actionClear_Filelist"/>
+   <addaction name="separator"/>
+   <addaction name="actionOptions"/>
+   <addaction name="separator"/>
   </widget>
   <action name="actionScan_Files">
    <property name="icon">
@@ -206,16 +209,28 @@
    </property>
   </action>
   <action name="actionExit">
+   <property name="icon">
+    <iconset>
+     <normaloff>icons/277-exit.png</normaloff>icons/277-exit.png</iconset>
+   </property>
    <property name="text">
     <string>Exit</string>
    </property>
   </action>
   <action name="actionAbout">
+   <property name="icon">
+    <iconset>
+     <normaloff>icons/269-info.png</normaloff>icons/269-info.png</iconset>
+   </property>
    <property name="text">
     <string>About</string>
    </property>
   </action>
   <action name="actionOptions">
+   <property name="icon">
+    <iconset>
+     <normaloff>icons/150-cogs.png</normaloff>icons/150-cogs.png</iconset>
+   </property>
    <property name="text">
     <string>Options</string>
    </property>
