@@ -20,32 +20,35 @@ version = 0.14
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import sys
-from PyQt5.QtWidgets import QApplication, QDialog, QMainWindow, QAction, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox, QMenu, QLineEdit,QCheckBox,QSpinBox,QSlider,QTextEdit
+from PyQt5.QtWidgets import QApplication, QDialog, QMainWindow, QAction, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox, QMenu, QLineEdit,QCheckBox,QSpinBox,QSlider,QTextEdit,QTabWidget
 from PyQt5 import uic
 from PyQt5.QtCore import QByteArray, Qt, QSettings
 import os.path
 from os import walk
 import fnmatch, re
 import subprocess
-from multiprocessing import Pool, Process
+from multiprocessing import Pool, Process,freeze_support
 import time
 import queue
 import io
 from functools import partial
 import hashlib, zlib
 import tempfile
+from spcharts import Bitrate_Chart
+import logging
 
 dataScanned=32
 dataFilenameStr=33
 dataRawOutput=34
+dataBitrate=35
 
 if os.name == 'nt':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer,sys.stdout.encoding,'backslashreplace') # fix for printing utf8 strings on windows
 
 if __name__ == '__main__':
+    freeze_support() # PyInstaller requires this
     main_q = queue.Queue()
-
-if __name__ == '__main__':
+    
     form_class = uic.loadUiType("specton.ui")[0]                 # Load the UI
     options_class = uic.loadUiType("options.ui")[0]
     fileinfo_class = uic.loadUiType("info.ui")[0]
@@ -55,6 +58,8 @@ if __name__ == '__main__':
         
     debug_enabled = settings.value("Options/Debug", False, type=bool)
     stop_tasks = False
+    
+    logging.basicConfig(level=logging.DEBUG, format='%(relativeCreated)6d %(threadName)s %(message)s')
 
 def findGuessEncBin():
     bin = settings.value('Paths/mp3guessenc_bin') # path to mp3guessenc binary
@@ -108,7 +113,7 @@ def scanner_Thread(row,filenameStr,binary,options,debug_enabled):
 # run scanner on filenameStr as separate process
 # and return output as string
     if debug_enabled:
-        print("DEBUG: thread started for row {}, file: {}".format(row,filenameStr))
+        logging.debug("thread started for row {}, file: {}".format(row,filenameStr))
     try:
         output = subprocess.check_output([binary,options,filenameStr])
         output_str = output.decode(sys.stdout.encoding)
@@ -118,7 +123,7 @@ def scanner_Thread(row,filenameStr,binary,options,debug_enabled):
 
 def aucdtect_Thread(row,filenameStr,decoder_bin,decoder_options,aucdtect_bin,aucdtect_options,debug_enabled):
     if debug_enabled:
-        print("DEBUG: aucdtect thread started for row {}, file: {}".format(row,filenameStr))
+        logging.debug("aucdtect thread started for row {}, file: {}".format(row,filenameStr))
     try:
         temp_file = tempfile.NamedTemporaryFile()
         temp_file_str = temp_file.name
@@ -128,6 +133,11 @@ def aucdtect_Thread(row,filenameStr,decoder_bin,decoder_options,aucdtect_bin,auc
         output_str = aucdtect_output.decode(sys.stdout.encoding)
     except:
         output_str = "Error"
+    
+    try:
+        os.remove(temp_file_str)
+    except OSError:
+        pass
         
     return (row,output_str,filenameStr)
 
@@ -142,9 +152,9 @@ if __name__ == '__main__':
     guessenc_bitrate_regex = re.compile(r"Data rate.*\: (.*)",re.MULTILINE)
     guessenc_length_regex = re.compile(r"Length.*\: ([\d\:\.]*)",re.MULTILINE)
     guessenc_filesize_regex = re.compile(r"Detected .*?\n  File size.*?\: (\d*) bytes",re.MULTILINE)
-    guessenc_frame_hist_regex = re.compile(r"Frame histogram\n(.*?)\n\n",re.DOTALL|re.MULTILINE)
-    guessenc_block_usage_regex = re.compile(r"Block usage\n(.*?)\n\s*-",re.DOTALL|re.MULTILINE)
-    guessenc_mode_count_regex = re.compile(r"Mode extension.*?\n(.*?)\n\s*-",re.DOTALL|re.MULTILINE)
+    guessenc_frame_hist_regex = re.compile(r"Frame histogram(.*?)(\d*) header errors",re.DOTALL)
+    guessenc_block_usage_regex = re.compile(r"^Block usage(.*?)-",re.DOTALL|re.MULTILINE)
+    guessenc_mode_count_regex = re.compile(r"^Mode extension: (.*?)--",re.DOTALL|re.MULTILINE)
     mediainfo_format_regex = re.compile(r"^Audio.*?Format.*?\: (.*?)$",re.DOTALL|re.MULTILINE)
     mediainfo_encoder_regex = re.compile(r"^Writing library.*\: (.*)",re.MULTILINE)
     mediainfo_length_regex = re.compile(r"^Audio.*?Duration.*?\: (.*?)$",re.DOTALL|re.MULTILINE)
@@ -162,6 +172,24 @@ def format_bytes(num, suffix='B'):
             return "{:3.1f} {}{}".format(num, unit, suffix)
         num /= 1024.0
     return "{:.1f} {}{}".format(num, 'Yi', suffix)
+    
+def get_bitrate_hist_data(frame_hist):
+    data_regex = re.compile(r"(\d*?) kbps \: *(\d*?) \(")
+    
+    x = []
+    y = []
+    
+    if frame_hist is not None:
+        for line in str.splitlines(frame_hist):
+            search = data_regex.search(line)
+            if search is not None:
+                bitrate = search.group(1)
+                x.append(int(bitrate))
+                framecount = search.group(2)
+                y.append(int(framecount))
+    
+    return (x,y)
+    
     
 def parse_mp3guessenc_output(mp3guessenc_output):
 # parse mp3guessenc output using regex
@@ -246,6 +274,8 @@ def parse_aucdtect_output(aucdtect_output):
     if search is not None:
         detection=search.group(1)
         probability=search.group(2)
+    else:
+        detection="Unknown"
 
     return {'error':False,'quality':"{} {}".format(detection,probability)}
     
@@ -270,13 +300,13 @@ def scanner_Finished(fileinfo):
             song_info = parse_mediainfo_output(scanner_output)
 
         if debug_enabled:
-            print("DEBUG: thread finished - row {}, result: {}, task count={}".format(i,song_info['encoder'],task_count))
+            logging.debug("thread finished - row {}, result: {}, task count={}".format(i,song_info['encoder'],task_count))
     
         main_q.put((i,song_info,scanner_output))
     else:
         main_q.put((i,{'error':True},scanner_output))
         if debug_enabled:
-            print("DEBUG: thread finished with error - row {}, result: {}, task count={}".format(i,scanner_output,task_count))
+            logging.debug("thread finished with error - row {}, result: {}, task count={}".format(i,scanner_output,task_count))
 
 def aucdtect_Finished(fileinfo):
 # callback function
@@ -290,13 +320,13 @@ def aucdtect_Finished(fileinfo):
         song_info = parse_aucdtect_output(scanner_output)
 
         if debug_enabled:
-            print("DEBUG: thread finished - row {}, result: {}, task count={}".format(i,song_info['quality'],task_count))
+            logging.debug("aucdtect thread finished - row {}, result: {}, task count={}".format(i,song_info['quality'],task_count))
     
         main_q.put((i,song_info,scanner_output))
     else:
         main_q.put((i,{'error':True},scanner_output))
         if debug_enabled:
-            print("DEBUG: thread finished with error - row {}, result: {}, task count={}".format(i,scanner_output,task_count))
+            logging.debug("aucdtect thread finished with error - row {}, result: {}, task count={}".format(i,scanner_output,task_count))
 
             
 def headerIndexByName(table,headerName):
@@ -308,14 +338,26 @@ def headerIndexByName(table,headerName):
     return index
 
 class FileInfo(QDialog):
-    def __init__(self, filenameStr,scanner_output):
+    def __init__(self, filenameStr,scanner_output,frame_hist):
         super(FileInfo,self).__init__()
         self.ui = fileinfo_class()
         self.ui.setupUi(self)
         self.setWindowTitle("Info - {}".format(os.path.basename(filenameStr)))
         textEdit_scanner = self.findChild(QTextEdit, "textEdit_scanner")
         textEdit_scanner.setPlainText(scanner_output)
-
+        tabWidget = self.findChild(QTabWidget, "tabWidget")
+        x,y = get_bitrate_hist_data(frame_hist)
+        if debug_enabled:
+            logging.debug("Frame histogram - {}".format(frame_hist))
+            logging.debug("Frame histogram - {}".format(x))
+            logging.debug("Frame histogram - {}".format(y))
+        try:
+            sc = Bitrate_Chart(self, width=5, height=4, dpi=100, x=x, y=y)
+            tabWidget.addTab(sc,"Bitrate Distribution")
+        except Exception as e:
+            logging.debug(e)
+        tabWidget.addTab(None,"Spectrogram")
+        
 
 class Options(QDialog):
     def __init__(self):
@@ -476,7 +518,8 @@ class Main(QMainWindow):
     def contextViewInfo(self, row):
         filenameItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Filename"))
         codecItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Encoder"))
-        dialog = FileInfo(filenameItem.data(dataFilenameStr),codecItem.data(dataRawOutput))
+        bitrateItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Bitrate"))
+        dialog = FileInfo(filenameItem.data(dataFilenameStr),codecItem.data(dataRawOutput),bitrateItem.data(dataBitrate))
         result = dialog.exec_()
         dialog.show()
 
@@ -633,7 +676,7 @@ class Main(QMainWindow):
 #                codecItem.setText("Scanning...")
             
                 if debug_enabled:
-                    print("DEBUG: About to run process for file {}".format(filenameStr))
+                    logging.debug("About to run process for file {}".format(filenameStr))
 
                 if fnmatch.fnmatch(filenameStr, "*.mp3") and not mp3guessencbin == "":
                     pool.apply_async(scanner_Thread, args=(i,filenameStr,mp3guessencbin,"-e",debug_enabled), callback=scanner_Finished) # queue processes
@@ -693,6 +736,11 @@ class Main(QMainWindow):
                     codecItem.setData(dataRawOutput,scanner_output)
                     bitrateItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Bitrate"))
                     bitrateItem.setText(song_info['bitrate'])
+                    try:
+                        frame_hist = song_info['frame_hist']
+                        bitrateItem.setData(dataBitrate,frame_hist)
+                    except:
+                        pass
                     lengthItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Length"))
                     lengthItem.setText(song_info['length'])
                     filesizeItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Filesize"))
@@ -734,7 +782,7 @@ class Main(QMainWindow):
                 update_Table(row,song_info,scanner_output)
                         
         if debug_enabled:
-            print("DEBUG: all threads finished, task count={}".format(task_count))
+            logging.debug("all threads finished, task count={}".format(task_count))
 
         if stop_tasks:
             pool.terminate()
