@@ -20,9 +20,10 @@ version = 0.14
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import sys
-from PyQt5.QtWidgets import QApplication, QDialog, QMainWindow, QAction, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox, QMenu, QLineEdit,QCheckBox,QSpinBox,QSlider,QTextEdit,QTabWidget
+from PyQt5.QtWidgets import QApplication, QDialog, QMainWindow, QAction, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox, QMenu, QLineEdit,QCheckBox,QSpinBox,QSlider,QTextEdit,QTabWidget,QLabel
 from PyQt5 import uic
 from PyQt5.QtCore import QByteArray, Qt, QSettings
+from PyQt5.QtGui import QPixmap
 import os.path
 from os import walk
 import fnmatch, re
@@ -109,6 +110,25 @@ def findauCDtectBin():
         
     return bin
     
+def findSoxBin():
+    bin = settings.value('Paths/sox_bin')
+    if bin is None:
+        if os.name == 'nt':
+            bin = 'scanners/sox.exe'
+        elif os.name == 'posix':
+            bin = '/usr/bin/sox'
+        else:
+            bin = ''
+        
+    return bin
+    
+def getTempFileName():
+    temp_file = tempfile.NamedTemporaryFile()
+    temp_file_str = temp_file.name
+    temp_file.close()
+    return temp_file_str
+    
+
 def scanner_Thread(row,filenameStr,binary,options,debug_enabled):
 # run scanner on filenameStr as separate process
 # and return output as string
@@ -125,17 +145,15 @@ def aucdtect_Thread(row,filenameStr,decoder_bin,decoder_options,aucdtect_bin,auc
     if debug_enabled:
         logging.debug("aucdtect thread started for row {}, file: {}".format(row,filenameStr))
     try:
-        temp_file = tempfile.NamedTemporaryFile()
-        temp_file_str = temp_file.name
-        temp_file.close()
-        decoder_output = subprocess.check_output([decoder_bin,decoder_options,filenameStr,"-o",temp_file_str],stderr=subprocess.PIPE)
-        aucdtect_output = subprocess.check_output([aucdtect_bin,aucdtect_options,temp_file_str],stderr=subprocess.PIPE)
+        temp_file = getTempFileName()
+        decoder_output = subprocess.check_output([decoder_bin,decoder_options,filenameStr,"-o",temp_file],stderr=subprocess.PIPE)
+        aucdtect_output = subprocess.check_output([aucdtect_bin,aucdtect_options,temp_file],stderr=subprocess.PIPE)
         output_str = aucdtect_output.decode(sys.stdout.encoding)
     except:
         output_str = "Error"
     
     try:
-        os.remove(temp_file_str)
+        os.remove(temp_file)
     except OSError:
         pass
         
@@ -161,6 +179,7 @@ if __name__ == '__main__':
     mediainfo_bitrate_regex = re.compile(r"^Bit rate.*\: ([\d\. ]* [MK]bps)",re.MULTILINE)
     mediainfo_filesize_regex = re.compile(r"^File size.*\: (.* .iB|.* Bytes)",re.MULTILINE)
     aucdtect_regex = re.compile(r"^This track looks like (.*) with probability (\d*%)",re.MULTILINE)
+    mp3_bitrate_data_regex = re.compile(r"(\d*?) kbps \: *(\d*?) \(")
 
 def doMP3Checks(mp3guessenc_output):
 # do some MP3 quality checks here
@@ -174,14 +193,12 @@ def format_bytes(num, suffix='B'):
     return "{:.1f} {}{}".format(num, 'Yi', suffix)
     
 def get_bitrate_hist_data(frame_hist):
-    data_regex = re.compile(r"(\d*?) kbps \: *(\d*?) \(")
-    
     x = []
     y = []
     
     if frame_hist is not None:
         for line in str.splitlines(frame_hist):
-            search = data_regex.search(line)
+            search = mp3_bitrate_data_regex.search(line)
             if search is not None:
                 bitrate = search.group(1)
                 x.append(int(bitrate))
@@ -199,7 +216,7 @@ def parse_mp3guessenc_output(mp3guessenc_output):
     encoder_string=""
     length=""
     filesize=""
-    frame_hist=""
+    frame_hist=() # tuple containing two sets of int lists
     block_usage=""
     mode_count=""
 
@@ -220,7 +237,7 @@ def parse_mp3guessenc_output(mp3guessenc_output):
         filesize=format_bytes(int(search.group(1)))
     search = guessenc_frame_hist_regex.search(mp3guessenc_output)
     if search is not None:
-        frame_hist=search.group(1)
+        frame_hist=get_bitrate_hist_data(search.group(1))
     search = guessenc_block_usage_regex.search(mp3guessenc_output)
     if search is not None:
         block_usage=search.group(1)
@@ -336,6 +353,18 @@ def headerIndexByName(table,headerName):
         if headerItem.text() == headerName:
             index = i
     return index
+    
+def makeSpectrogram(fn):
+    sox_bin = findSoxBin()
+    temp_file = getTempFileName() + ".png"
+    palette = settings.value('Options/SpectrogramPalette',1, type=int)
+    try:
+        sox_output = subprocess.check_output([sox_bin,fn,"-n","spectrogram","-p{}".format(palette),"-o",temp_file],stderr=subprocess.PIPE)
+    except Exception as e:
+        if debug_enabled:
+            logging.debug(e)
+        temp_file = ""
+    return temp_file
 
 class FileInfo(QDialog):
     def __init__(self, filenameStr,scanner_output,frame_hist):
@@ -346,7 +375,12 @@ class FileInfo(QDialog):
         textEdit_scanner = self.findChild(QTextEdit, "textEdit_scanner")
         textEdit_scanner.setPlainText(scanner_output)
         tabWidget = self.findChild(QTabWidget, "tabWidget")
-        x,y = get_bitrate_hist_data(frame_hist)
+        if frame_hist is not None:
+            x = frame_hist[0]
+            y = frame_hist[1]
+        else:
+            x = []
+            y = []
         if debug_enabled:
             logging.debug("Frame histogram - {}".format(frame_hist))
             logging.debug("Frame histogram - {}".format(x))
@@ -356,8 +390,17 @@ class FileInfo(QDialog):
             tabWidget.addTab(sc,"Bitrate Distribution")
         except Exception as e:
             logging.debug(e)
-        tabWidget.addTab(None,"Spectrogram")
-        
+        px = QLabel(self)
+        tabWidget.addTab(px,"Spectrogram")
+        if settings.value('Options/EnableSpectrogram',True, type=bool):
+            spec_file = makeSpectrogram(filenameStr)
+        else:
+            spec_file = ""
+        if not spec_file == "":
+            try:
+                px.setPixmap(QPixmap(spec_file))
+            except:
+                pass
 
 class Options(QDialog):
     def __init__(self):
@@ -370,6 +413,8 @@ class Options(QDialog):
         lineEdit_mediainfo_path.setText(findMediaInfoBin())
         lineEdit_mp3guessenc_path = self.findChild(QLineEdit, "lineEdit_mp3guessenc_path")
         lineEdit_mp3guessenc_path.setText(findGuessEncBin())
+        lineEdit_sox_path = self.findChild(QLineEdit, "lineEdit_sox_path")
+        lineEdit_sox_path.setText(findSoxBin())
         checkBox_recursive = self.findChild(QCheckBox, "checkBox_recursive")
         checkBox_recursive.setChecked(settings.value('Options/RecurseDirectories',True, type=bool))
         checkBox_followsymlinks = self.findChild(QCheckBox, "checkBox_followsymlinks")
@@ -380,12 +425,16 @@ class Options(QDialog):
         checkBox_cacheraw.setChecked(settings.value('Options/CacheRawOutput',False, type=bool))
         spinBox_processes = self.findChild(QSpinBox, "spinBox_processes")
         spinBox_processes.setValue(settings.value('Options/Processes',0, type=int))
+        spinBox_spectrogram_palette = self.findChild(QSpinBox, "spinBox_spectrogram_palette")
+        spinBox_spectrogram_palette.setValue(settings.value('Options/SpectrogramPalette',1, type=int))
         checkBox_debug = self.findChild(QCheckBox, "checkBox_debug")
         checkBox_debug.setChecked(settings.value("Options/Debug", False, type=bool))
         checkBox_savewindowstate = self.findChild(QCheckBox, "checkBox_savewindowstate")
         checkBox_savewindowstate.setChecked(settings.value("Options/SaveWindowState", True, type=bool))
         checkBox_clearfilelist = self.findChild(QCheckBox, "checkBox_clearfilelist")
         checkBox_clearfilelist.setChecked(settings.value('Options/ClearFilelist',True, type=bool))
+        checkBox_spectrogram = self.findChild(QCheckBox, "checkBox_spectrogram")
+        checkBox_spectrogram.setChecked(settings.value('Options/EnableSpectrogram',True, type=bool))
         checkBox_aucdtect_scan = self.findChild(QCheckBox, "checkBox_aucdtect_scan")
         checkBox_aucdtect_scan.setChecked(settings.value('Options/auCDtect_scan',False, type=bool))
         horizontalSlider_aucdtect_mode = self.findChild(QSlider, "horizontalSlider_aucdtect_mode")
@@ -398,6 +447,8 @@ class Options(QDialog):
         settings.setValue('Paths/mediainfo_bin',lineEdit_mediainfo_path.text())
         lineEdit_mp3guessenc_path = self.findChild(QLineEdit, "lineEdit_mp3guessenc_path")
         settings.setValue('Paths/mp3guessenc_bin',lineEdit_mp3guessenc_path.text())
+        lineEdit_sox_path = self.findChild(QLineEdit, "lineEdit_sox_path")
+        settings.setValue('Paths/sox_bin',lineEdit_sox_path.text())
         checkBox_recursive = self.findChild(QCheckBox, "checkBox_recursive")
         settings.setValue('Options/RecurseDirectories',checkBox_recursive.isChecked())
         checkBox_followsymlinks = self.findChild(QCheckBox, "checkBox_followsymlinks")
@@ -408,12 +459,16 @@ class Options(QDialog):
         settings.setValue('Options/CacheRawOutput',checkBox_cacheraw.isChecked())
         spinBox_processes = self.findChild(QSpinBox, "spinBox_processes")
         settings.setValue('Options/Processes',spinBox_processes.value())
+        spinBox_spectrogram_palette = self.findChild(QSpinBox, "spinBox_spectrogram_palette")
+        settings.setValue('Options/SpectrogramPalette',spinBox_spectrogram_palette.value())
         checkBox_debug = self.findChild(QCheckBox, "checkBox_debug")
         settings.setValue('Options/Debug',checkBox_debug.isChecked())
         checkBox_savewindowstate = self.findChild(QCheckBox, "checkBox_savewindowstate")
         settings.setValue('Options/SaveWindowState',checkBox_savewindowstate.isChecked())
         checkBox_clearfilelist = self.findChild(QCheckBox, "checkBox_clearfilelist")
         settings.setValue('Options/ClearFilelist',checkBox_clearfilelist.isChecked())
+        checkBox_spectrogram = self.findChild(QCheckBox, "checkBox_spectrogram")
+        settings.setValue('Options/EnableSpectrogram',checkBox_spectrogram.isChecked())
         checkBox_aucdtect_scan = self.findChild(QCheckBox, "checkBox_aucdtect_scan")
         settings.setValue('Options/auCDtect_scan',checkBox_aucdtect_scan.isChecked())
         horizontalSlider_aucdtect_mode = self.findChild(QSlider, "horizontalSlider_aucdtect_mode")
@@ -587,6 +642,9 @@ class Main(QMainWindow):
                             lengthItem.setText(filecache.value('{}/Length'.format(filemd5)))
                             filesizeItem.setText(filecache.value('{}/Filesize'.format(filemd5)))
                             cached_output = filecache.value('{}/RawOutput'.format(filemd5))
+                            frame_hist = filecache.value('{}/FrameHist'.format(filemd5))
+                            if frame_hist is not None:
+                                bitrateItem.setData(dataBitrate,frame_hist)
                             quality = filecache.value('{}/Quality'.format(filemd5))
                             if quality is not None:
                                 qualityItem.setText(quality)
@@ -754,6 +812,10 @@ class Main(QMainWindow):
                         filecache.setValue('{}/Bitrate'.format(filemd5),bitrateItem.text())
                         filecache.setValue('{}/Length'.format(filemd5),lengthItem.text())
                         filecache.setValue('{}/Filesize'.format(filemd5),filesizeItem.text())
+                        try:
+                            filecache.setValue('{}/FrameHist'.format(filemd5),bitrateItem.data(dataBitrate))
+                        except:
+                            pass
                         if settings.value('Options/CacheRawOutput',False, type=bool) == True:
                             filecache.setValue('{}/RawOutput'.format(filemd5),zlib.compress(scanner_output.encode('utf-8')))
 
