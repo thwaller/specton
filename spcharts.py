@@ -1,10 +1,27 @@
 import matplotlib
 matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 plt.style.use(['ggplot'])
 from PyQt5.QtWidgets import QSizePolicy
+
+class NavigationToolbar(NavigationToolbar2QT):
+    def __init__(self, canvas_, parent_):
+#        backend.figureoptions = None  # Monkey patched to kill the figure options button on matplotlib toolbar
+
+#        self.toolitems = (
+#            ('Home', 'Reset original view', 'home', 'home'),
+#            ('Back', 'Back to previous view', 'back', 'back'),
+#            ('Forward', 'Forward to next view', 'forward', 'forward'),
+#            (None, None, None, None),
+#            ('Pan', 'Pan axes with left mouse, zoom with right', 'move', 'pan'),
+#            ('Zoom', 'Zoom to rectangle', 'zoom_to_rect', 'zoom'),
+#            (None, None, None, None),
+#            ('Save', 'Save the current image', 'filesave', 'save_figure'),
+#            )
+        NavigationToolbar2QT.__init__(self, canvas_, parent_)
 
 class Bitrate_Chart(FigureCanvas):
     def __init__(self, parent=None, width=5, height=4, dpi=100, x=[], y=[]):
@@ -29,6 +46,7 @@ class Bitrate_Chart(FigureCanvas):
          self.axes.set_ylabel('Number of frames')
          self.axes.set_xlabel('Bitrate (Kbps)')
          self.axes.set_xticks([32,64,96,128,160,192,224,256,288,320,352,384])
+#         self.axes.subplots_adjust(bottom=0.12, left=0.09, right=0.99, top=0.98)
 
 class BitGraph(FigureCanvas):
     def __init__(self, parent=None, width=5, height=4, dpi=100, x=[], y=[]):

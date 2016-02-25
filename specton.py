@@ -20,7 +20,7 @@ version = 0.141
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import sys
-from PyQt5.QtWidgets import QApplication, QDialog, QMainWindow, QAction, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox, QMenu, QLineEdit,QCheckBox,QSpinBox,QSlider,QTextEdit,QTabWidget,QLabel
+from PyQt5.QtWidgets import QWidget, QApplication, QDialog, QMainWindow, QAction, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox, QMenu, QLineEdit,QCheckBox,QSpinBox,QSlider,QTextEdit,QTabWidget,QLabel,QGridLayout
 from PyQt5 import uic
 from PyQt5.QtCore import QByteArray, Qt, QSettings
 from PyQt5.QtGui import QPixmap
@@ -35,7 +35,7 @@ from functools import partial
 from hashlib import md5
 import zlib
 import tempfile
-from spcharts import Bitrate_Chart, BitGraph
+from spcharts import Bitrate_Chart, BitGraph, NavigationToolbar
 import logging
 
 dataScanned=32
@@ -447,8 +447,13 @@ class FileInfo(QDialog):
             x = graph_data_xy_tuple[0]
             y = graph_data_xy_tuple[1]
             try:
+                tab = QWidget()
+                grid = QGridLayout(tab)
                 sc = BitGraph(self, width=5, height=4, dpi=100, x=x, y=y)
-                tabWidget.addTab(sc,"Bitrate Graph")
+                grid.addWidget(sc)
+                mpl_toolbar = NavigationToolbar(sc, self)
+                grid.addWidget(mpl_toolbar)
+                tabWidget.addTab(tab,"Bitrate Graph")
             except Exception as e:
                 debug_log(e)
         
@@ -584,7 +589,6 @@ class Main(QMainWindow):
     def edit_Options(self):
         dialog = Options()
         result = dialog.exec_()
-        dialog.show()
 
     def tableContextMenu(self, point):
         row = self.ui.tableWidget.rowAt(point.y())
@@ -635,7 +639,6 @@ class Main(QMainWindow):
         bitrateItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Bitrate"))
         dialog = FileInfo(filenameItem.data(dataFilenameStr),codecItem.data(dataRawOutput),bitrateItem.data(dataBitrate))
         result = dialog.exec_()
-        dialog.show()
 
     def contextPlayFile(self, row):
         pass
