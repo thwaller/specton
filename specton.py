@@ -4,7 +4,7 @@
 #    Copyright (C) 2016 D. Bird <somesortoferror@gmail.com>
 #    https://github.com/somesortoferror/specton
 
-version = 0.141
+version = 0.142
 
 #    This program is free software: you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -22,14 +22,15 @@ version = 0.141
 import sys
 from PyQt5.QtWidgets import QWidget, QApplication, QDialog, QMainWindow, QAction, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox, QMenu, QLineEdit,QCheckBox,QSpinBox,QSlider,QTextEdit,QTabWidget,QLabel,QGridLayout
 from PyQt5 import uic
-from PyQt5.QtCore import QByteArray, Qt, QSettings
+from PyQt5.QtCore import QByteArray, Qt, QSettings, QTimer
 from PyQt5.QtGui import QPixmap
 import os.path
+import os
 from os import walk
 import fnmatch, re
 import subprocess
 from multiprocessing import Pool, Process,freeze_support, Queue,set_executable, Lock as mp_lock
-from time import sleep
+from time import sleep, clock
 from io import TextIOWrapper
 from functools import partial
 from hashlib import md5
@@ -42,6 +43,8 @@ dataScanned=32
 dataFilenameStr=33
 dataRawOutput=34
 dataBitrate=35
+
+defaultfilemask = r"\.mp3$|\.flac$|\.mpc$|\.ogg$|\.wav$|\.m4a$|\.aac$|\.ac3$|\.ra$|\.au$"
 
 class fakestd(object):
     def write(self, string):
@@ -64,6 +67,8 @@ if os.name == 'nt':
 if __name__ == '__main__':
     freeze_support() # PyInstaller requires this
     main_q = Queue()
+    infodlg_q = Queue()
+    infodlg_list = [] # list of dialog windows
     
     form_class = uic.loadUiType("specton.ui")[0]                 # Load the UI
     options_class = uic.loadUiType("options.ui")[0]
@@ -75,7 +80,7 @@ if __name__ == '__main__':
     debug_enabled = settings.value("Options/Debug", False, type=bool)
     stop_tasks = False
     
-    logging.basicConfig(level=logging.DEBUG, format='%(relativeCreated)6d %(threadName)s %(message)s')
+    logging.basicConfig(level=logging.DEBUG, format='%(relativeCreated)6d %(threadName)s - %(message)s')
 
 def findBinary(settings_key="", nt_path="", posix_path=""):
     bin = settings.value(settings_key)
@@ -326,20 +331,7 @@ def headerIndexByName(table,headerName):
             index = i
     return index
     
-def makeSpectrogram(fn):
-    sox_bin = findSoxBin()
-    temp_file = getTempFileName() + ".png"
-    palette = settings.value('Options/SpectrogramPalette',1, type=int)
-    try:
-        sox_output = subprocess.check_output([sox_bin,fn,"-n","spectrogram","-p{}".format(palette),"-o",temp_file],stderr=subprocess.PIPE)
-    except Exception as e:
-        if debug_enabled:
-            debug_log(e)
-        temp_file = ""
-    return temp_file
-
-def makeBitGraph(fn):
-    ffprobe_bin = findffprobeBin()
+def makeBitGraph(fn,grid,ffprobe_bin):
     temp_file = tempfile.NamedTemporaryFile(delete=False)
     try:
 #        subprocess.call([ffprobe_bin,"-show_frames","-show_entries","frame=pkt_pts_time,pkt_size,pkt_duration_time","-print_format","csv=print_section=0",fn],stdout=temp_file,stderr=subprocess.PIPE)
@@ -348,7 +340,7 @@ def makeBitGraph(fn):
         if debug_enabled:
             debug_log(e)
             return None
-
+    
     temp_file_str = temp_file.name
     temp_file.close()
     temp_file = open(temp_file_str)
@@ -358,21 +350,24 @@ def makeBitGraph(fn):
     
     for line in temp_file:
         xy = (line.split(","))
+
+        if xy[0] == "N/A":
+            continue
         try:
             x = float(xy[0]) # time
-        except:
+        except (ValueError, OverflowError) as e:
             x = 0
         try:
             t = float(xy[1]) # duration
-        except:
+        except (ValueError, OverflowError) as e:
             t = 0
         try:
             sz = int(xy[2]) # size in bytes
-        except:
+        except (ValueError, OverflowError) as e:
             sz = 0
         try:
             y = round((sz*8)/1000/t)
-        except:
+        except (ValueError, OverflowError) as e:
             y = 0
         
         if y > 0:
@@ -381,22 +376,26 @@ def makeBitGraph(fn):
         
     temp_file.close()
 
-    if debug_enabled:
-        temp_file = open(temp_file_str,"w")
-        for i in range(0,len(x_list)):
-            temp_file.write(str(x_list[i]) + "," + str(y_list[i]) + "\n")
-        temp_file.close()
-    else:
-        os.remove(temp_file_str)
+#uncomment this to write out bitrate data in csv
+    
+#    if debug_enabled:
+#        temp_file = open(temp_file_str + ".csv","w")
+#        for i in range(0,len(x_list)):
+#            temp_file.write(str(x_list[i]) + "," + str(y_list[i]) + "\n")
+#        temp_file.close()
+#    else:
+    os.remove(temp_file_str)
             
-    return (x_list,y_list)
+    return ((x_list,y_list),fn,grid)
 
 class FileInfo(QDialog):
-    def __init__(self, filenameStr,scanner_output,frame_hist):
+    def __init__(self,filenameStr,scanner_output,frame_hist):
         super(FileInfo,self).__init__()
         self.ui = fileinfo_class()
         self.ui.setupUi(self)
         self.setWindowTitle("Info - {}".format(os.path.basename(filenameStr)))
+        self.filename = filenameStr
+        infodlg_list.append(self)
         
         windowGeometry = settings.value("State/InfoWindowGeometry")
         if windowGeometry is not None:
@@ -426,45 +425,132 @@ class FileInfo(QDialog):
                 tabWidget.addTab(sc,"Bitrate Distribution")
             except Exception as e:
                 debug_log(e)
-        if settings.value('Options/EnableSpectrogram',True, type=bool):
-            spec_file = makeSpectrogram(filenameStr)
-        else:
-            spec_file = ""
-        if not spec_file == "":
-            try:
-                px = QLabel(self)
-                tabWidget.addTab(px,"Spectrogram")
-                px.setPixmap(QPixmap(spec_file))
-                os.remove(spec_file)
-            except Exception as e:
-                debug_log(e)
                 
-        if settings.value('Options/EnableBitGraph',True, type=bool):
-            graph_data_xy_tuple = makeBitGraph(filenameStr)
-        if graph_data_xy_tuple is not None:
+        updateGuiTimer = QTimer(self)
+        updateGuiTimer.timeout.connect(self.updateGui)
+        updateGuiTimer.setInterval(1000)
+        updateGuiTimer.start()
+                
+        infopool = Pool(None)
+        if settings.value('Options/EnableSpectrogram',True, type=bool):
+            tab = QWidget()
+            grid = QGridLayout(tab)
+            grid.setObjectName("SpectrogramLayout-{}".format(md5Str(filenameStr)))
+            tabWidget.addTab(tab,"Spectrogram")
+
+            sox_bin = findSoxBin()
+            temp_file = getTempFileName() + ".png"
+            palette = settings.value('Options/SpectrogramPalette',1, type=int)
+            
             if debug_enabled:
-                debug_log(graph_data_xy_tuple)
-            x = graph_data_xy_tuple[0]
-            y = graph_data_xy_tuple[1]
-            try:
-                tab = QWidget()
-                grid = QGridLayout(tab)
-                sc = BitGraph(self, width=5, height=4, dpi=100, x=x, y=y)
-                grid.addWidget(sc)
-                mpl_toolbar = NavigationToolbar(sc, self)
-                grid.addWidget(mpl_toolbar)
-                tabWidget.addTab(tab,"Bitrate Graph")
-            except Exception as e:
-                debug_log(e)
-        
-        
+                debug_log("Running sox to create spectrogram for file {}".format(filenameStr))
+            
+            infopool.apply_async(makeSpectrogram, args=(filenameStr,sox_bin,temp_file,palette,grid.objectName()),callback=spectrogramCallback)
+            
+        if settings.value('Options/EnableBitGraph',True, type=bool):
+            tab = QWidget()
+            grid = QGridLayout(tab)
+            grid.setObjectName("BitgraphLayout-{}".format(md5Str(filenameStr)))
+            tabWidget.addTab(tab,"Bitrate Graph")
+            if debug_enabled:
+                debug_log("Running ffprobe to create bitrate graph for file {}".format(filenameStr))
+            infopool.apply_async(makeBitGraph, args=(filenameStr,grid.objectName(),findffprobeBin()),callback=bitgraphCallback)
+               
+        infopool.close()
+         
+    def updateGui(self):
+    # called from timer every 1s
+    # subprocesses post to queue when finished
+        if not infodlg_q.empty():
+            update_info = infodlg_q.get(False,1)
+            update_type = update_info[0]
+            update_data = update_info[1]
+            update_layout = update_info[2]
+            update_filename = update_info[3]
+
+            if update_type == "Spectrogram":
+                if debug_enabled:
+                    debug_log("updateGui received Spectrogram update")
+                px = QLabel()
+                dlg = findDlg(update_filename)
+                if dlg is not None:
+                    layout = dlg.findChild(QGridLayout,update_layout)
+                    if layout is not None:
+                        layout.addWidget(px)
+                        px.setPixmap(QPixmap(update_data))
+                    else:
+                        debug_log("updateGui ran but layout not found type={} str={} layout={}".format(update_type,update_data,update_layout))
+                else:
+                    debug_log("updateGui couldn't find dlg type={} str={} layout={}".format(update_type,update_data,update_layout))                    
+                os.remove(update_data) # delete generated spectrogram image
+
+            elif update_type == "BitGraph":
+                if debug_enabled:
+                    debug_log("updateGui received BitGraph update")
+                x = update_data[0]
+                y = update_data[1]
+                try:
+                    sc = BitGraph(self, width=5, height=4, dpi=100, x=x, y=y)
+                    dlg = findDlg(update_filename)
+                    if dlg is not None:
+                        layout = dlg.findChild(QGridLayout,update_layout)
+                        if layout is not None:
+                            layout.addWidget(sc)
+                            mpl_toolbar = NavigationToolbar(sc, self)
+                            layout.addWidget(mpl_toolbar)
+                except Exception as e:
+                    debug_log(e)
+                        
     def closeEvent(self,event):
         windowGeometry = self.saveGeometry()
         
         if settings.value("Options/SaveWindowState", True, type=bool):
             settings.setValue("State/InfoWindowGeometry",windowGeometry)
         
-        event.accept()        
+        infodlg_list.remove(self)
+        event.accept()
+
+def findDlg(searchname):
+    if debug_enabled:
+        debug_log("findDlg called list: {} search: {}".format(infodlg_list,searchname))
+    for obj in infodlg_list:
+        if obj.filename == searchname:
+            if debug_enabled:
+                debug_log("findDlg dialog found: {} filename: {}".format(obj,searchname))
+            return obj
+
+def makeSpectrogram(fn,sox_bin,temp_file,palette,grid):
+    try:
+        sox_output = subprocess.check_output([sox_bin,fn,"-n","spectrogram","-p{}".format(palette),"-o",temp_file],stderr=subprocess.PIPE)
+    except Exception as e:
+        if debug_enabled:
+            debug_log(e)
+        temp_file = ""
+    return (temp_file,grid,fn)
+
+def spectrogramCallback(data):
+    if debug_enabled:
+        debug_log("spectrogramCallback called")
+    spec_file = data[0]
+    grid_name = data[1]
+    fn = data[2]
+    if not spec_file == "":
+        try:
+            infodlg_q.put(("Spectrogram",spec_file,grid_name,fn)) # Timer watches this queue and updates gui
+        except Exception as e:
+            debug_log(e)
+
+def bitgraphCallback(data):
+    if debug_enabled:
+        debug_log("bitgraphCallback called")
+    graph_data_xy_tuple = data[0]
+    grid_name = data[2]
+    fn = data[1]
+    if graph_data_xy_tuple is not None:
+#        if debug_enabled:
+#            debug_log(graph_data_xy_tuple)
+        infodlg_q.put(("BitGraph",graph_data_xy_tuple,grid_name,fn))
+        
                 
 class Options(QDialog):
     def __init__(self):
@@ -472,13 +558,19 @@ class Options(QDialog):
         self.ui = options_class()
         self.ui.setupUi(self)
         lineEdit_filemaskregex = self.findChild(QLineEdit, "lineEdit_filemaskregex")
-        lineEdit_filemaskregex.setText(settings.value('Options/FilemaskRegEx',r"\.mp3$|\.flac$|\.mpc$|\.ogg$|\.wav$|\.m4a$|\.aac$|\.ac3$|\.ra$|\.au$"))
+        filemask_regex = settings.value('Options/FilemaskRegEx',defaultfilemask)
+        if not filemask_regex == "":
+            lineEdit_filemaskregex.setText(filemask_regex)
+        else:
+            lineEdit_filemaskregex.setText(defaultfilemask)
         lineEdit_mediainfo_path = self.findChild(QLineEdit, "lineEdit_mediainfo_path")
         lineEdit_mediainfo_path.setText(findMediaInfoBin())
         lineEdit_mp3guessenc_path = self.findChild(QLineEdit, "lineEdit_mp3guessenc_path")
         lineEdit_mp3guessenc_path.setText(findGuessEncBin())
         lineEdit_sox_path = self.findChild(QLineEdit, "lineEdit_sox_path")
         lineEdit_sox_path.setText(findSoxBin())
+        lineEdit_ffprobe_path = self.findChild(QLineEdit, "lineEdit_ffprobe_path")
+        lineEdit_ffprobe_path.setText(findffprobeBin())
         checkBox_recursive = self.findChild(QCheckBox, "checkBox_recursive")
         checkBox_recursive.setChecked(settings.value('Options/RecurseDirectories',True, type=bool))
         checkBox_followsymlinks = self.findChild(QCheckBox, "checkBox_followsymlinks")
@@ -499,6 +591,8 @@ class Options(QDialog):
         checkBox_clearfilelist.setChecked(settings.value('Options/ClearFilelist',True, type=bool))
         checkBox_spectrogram = self.findChild(QCheckBox, "checkBox_spectrogram")
         checkBox_spectrogram.setChecked(settings.value('Options/EnableSpectrogram',True, type=bool))
+        checkBox_bitrate_graph = self.findChild(QCheckBox, "checkBox_bitrate_graph")
+        checkBox_bitrate_graph.setChecked(settings.value('Options/EnableBitGraph',True, type=bool))
         checkBox_aucdtect_scan = self.findChild(QCheckBox, "checkBox_aucdtect_scan")
         checkBox_aucdtect_scan.setChecked(settings.value('Options/auCDtect_scan',False, type=bool))
         horizontalSlider_aucdtect_mode = self.findChild(QSlider, "horizontalSlider_aucdtect_mode")
@@ -513,6 +607,8 @@ class Options(QDialog):
         settings.setValue('Paths/mp3guessenc_bin',lineEdit_mp3guessenc_path.text())
         lineEdit_sox_path = self.findChild(QLineEdit, "lineEdit_sox_path")
         settings.setValue('Paths/sox_bin',lineEdit_sox_path.text())
+        lineEdit_ffprobe_path = self.findChild(QLineEdit, "lineEdit_ffprobe_path")
+        settings.setValue('Paths/ffprobe_bin',lineEdit_ffprobe_path.text())
         checkBox_recursive = self.findChild(QCheckBox, "checkBox_recursive")
         settings.setValue('Options/RecurseDirectories',checkBox_recursive.isChecked())
         checkBox_followsymlinks = self.findChild(QCheckBox, "checkBox_followsymlinks")
@@ -533,6 +629,8 @@ class Options(QDialog):
         settings.setValue('Options/ClearFilelist',checkBox_clearfilelist.isChecked())
         checkBox_spectrogram = self.findChild(QCheckBox, "checkBox_spectrogram")
         settings.setValue('Options/EnableSpectrogram',checkBox_spectrogram.isChecked())
+        checkBox_bitrate_graph = self.findChild(QCheckBox, "checkBox_bitrate_graph")
+        settings.setValue('Options/EnableBitGraph',checkBox_bitrate_graph.isChecked())
         checkBox_aucdtect_scan = self.findChild(QCheckBox, "checkBox_aucdtect_scan")
         settings.setValue('Options/auCDtect_scan',checkBox_aucdtect_scan.isChecked())
         horizontalSlider_aucdtect_mode = self.findChild(QSlider, "horizontalSlider_aucdtect_mode")
@@ -637,8 +735,18 @@ class Main(QMainWindow):
         filenameItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Filename"))
         codecItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Encoder"))
         bitrateItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Bitrate"))
-        dialog = FileInfo(filenameItem.data(dataFilenameStr),codecItem.data(dataRawOutput),bitrateItem.data(dataBitrate))
-        result = dialog.show()
+        filenameStr = filenameItem.data(dataFilenameStr)
+        dlg = findDlg(filenameStr)
+        if dlg is None:
+            if debug_enabled:
+                debug_log("contextViewInfo: dialog was None")
+            dlg = FileInfo(filenameStr,codecItem.data(dataRawOutput),bitrateItem.data(dataBitrate))
+            if debug_enabled:
+                debug_log(dlg.objectName())
+            dlg.show()
+        else:
+            dlg.showNormal()
+            dlg.activateWindow()
 
     def contextPlayFile(self, row):
         pass
@@ -651,10 +759,14 @@ class Main(QMainWindow):
     
     def select_Folder(self):
         directory = str(QFileDialog.getExistingDirectory(self, "Select Directory to Scan", os.path.expanduser("~")))
+        filemask = settings.value('Options/FilemaskRegEx',defaultfilemask)
         
-        filemask = settings.value('Options/FilemaskRegEx',r"\.mp3$|\.flac$|\.mpc$|\.ogg$|\.wav$|\.m4a$|\.aac$|\.ac3$|\.ra$|\.au$")
-        filemask_regex = re.compile(filemask,re.IGNORECASE)
-
+        try:
+            filemask_regex = re.compile(filemask,re.IGNORECASE)
+        except re.error as e:
+            debug_log("Error in filemask regex: {}, using default".format(e))
+            filemask_regex = re.compile(defaultfilemask,re.IGNORECASE)
+            
         followsymlinks = settings.value('Options/FollowSymlinks',False, type=bool)
         recursedirectories = settings.value('Options/RecurseDirectories',True, type=bool)
         clearfilelist = settings.value('Options/ClearFilelist',True, type=bool)
