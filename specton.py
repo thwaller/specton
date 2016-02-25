@@ -20,7 +20,7 @@ version = 0.142
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import sys
-from PyQt5.QtWidgets import QWidget, QApplication, QDialog, QMainWindow, QAction, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox, QMenu, QLineEdit,QCheckBox,QSpinBox,QSlider,QTextEdit,QTabWidget,QLabel,QGridLayout
+from PyQt5.QtWidgets import QWidget, QApplication, QDialog, QMainWindow, QAction, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox, QMenu, QLineEdit,QCheckBox,QSpinBox,QSlider,QTextEdit,QTabWidget,QLabel,QGridLayout,QPushButton
 from PyQt5 import uic
 from PyQt5.QtCore import QByteArray, Qt, QSettings, QTimer
 from PyQt5.QtGui import QPixmap
@@ -597,7 +597,32 @@ class Options(QDialog):
         checkBox_aucdtect_scan.setChecked(settings.value('Options/auCDtect_scan',False, type=bool))
         horizontalSlider_aucdtect_mode = self.findChild(QSlider, "horizontalSlider_aucdtect_mode")
         horizontalSlider_aucdtect_mode.setValue(settings.value('Options/auCDtect_mode',8, type=int))
-    
+        
+        pushButton_mediainfo_path = self.findChild(QPushButton, "pushButton_mediainfo_path")
+        pushButton_mediainfo_path.clicked.connect(self.choosePathButton)
+        pushButton_mp3guessenc_path = self.findChild(QPushButton, "pushButton_mp3guessenc_path")
+        pushButton_mp3guessenc_path.clicked.connect(self.choosePathButton)
+        pushButton_sox_path = self.findChild(QPushButton, "pushButton_sox_path")
+        pushButton_sox_path.clicked.connect(self.choosePathButton)
+        pushButton_ffprobe_path = self.findChild(QPushButton, "pushButton_ffprobe_path")
+        pushButton_ffprobe_path.clicked.connect(self.choosePathButton)
+        
+    def choosePathButton(self):
+        sender = self.sender()
+        if sender.objectName() == "pushButton_mediainfo_path":
+            lineEdit = self.findChild(QLineEdit, "lineEdit_mediainfo_path")
+        elif sender.objectName() == "pushButton_mp3guessenc_path":
+            lineEdit = self.findChild(QLineEdit, "lineEdit_mp3guessenc_path")
+        elif sender.objectName() == "pushButton_sox_path":
+            lineEdit = self.findChild(QLineEdit, "lineEdit_sox_path")
+        elif sender.objectName() == "pushButton_ffprobe_path":
+            lineEdit = self.findChild(QLineEdit, "lineEdit_ffprobe_path")
+        if lineEdit is not None:
+            path = lineEdit.text()
+            file = str(QFileDialog.getOpenFileName(parent=self,caption="Browse to executable file",directory=path)[0])
+            if not file == "":
+                lineEdit.setText(file)
+        
     def accept(self):
         lineEdit_filemaskregex = self.findChild(QLineEdit, "lineEdit_filemaskregex")
         settings.setValue('Options/FilemaskRegEx',lineEdit_filemaskregex.text())
