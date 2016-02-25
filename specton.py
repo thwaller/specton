@@ -638,7 +638,7 @@ class Main(QMainWindow):
         codecItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Encoder"))
         bitrateItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Bitrate"))
         dialog = FileInfo(filenameItem.data(dataFilenameStr),codecItem.data(dataRawOutput),bitrateItem.data(dataBitrate))
-        result = dialog.exec_()
+        result = dialog.show()
 
     def contextPlayFile(self, row):
         pass
