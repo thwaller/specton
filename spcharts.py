@@ -25,7 +25,7 @@ class NavigationToolbar(NavigationToolbar2QT):
 
 class Bitrate_Chart(FigureCanvas):
     def __init__(self, parent=None, width=5, height=4, dpi=100, x=[], y=[]):
-        fig = Figure(figsize=(width, height), dpi=dpi)
+        fig = Figure(figsize=(width, height), dpi=dpi, tight_layout=True)
         self.axes = fig.add_subplot(111)
         # We want the axes cleared every time plot() is called
         self.axes.hold(False)
@@ -46,11 +46,10 @@ class Bitrate_Chart(FigureCanvas):
          self.axes.set_ylabel('Number of frames')
          self.axes.set_xlabel('Bitrate (Kbps)')
          self.axes.set_xticks([32,64,96,128,160,192,224,256,288,320,352,384])
-#         self.axes.subplots_adjust(bottom=0.12, left=0.09, right=0.99, top=0.98)
 
 class BitGraph(FigureCanvas):
     def __init__(self, parent=None, width=5, height=4, dpi=100, x=[], y=[]):
-        fig = Figure(figsize=(width, height), dpi=dpi)
+        fig = Figure(figsize=(width, height), dpi=dpi, tight_layout=True)
         self.axes = fig.add_subplot(111)
         # We want the axes cleared every time plot() is called
         self.axes.hold(False)
