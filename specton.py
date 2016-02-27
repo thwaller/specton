@@ -4,7 +4,7 @@
 #    Copyright (C) 2016 D. Bird <somesortoferror@gmail.com>
 #    https://github.com/somesortoferror/specton
 
-version = 0.142
+version = 0.15
 
 #    This program is free software: you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -23,7 +23,7 @@ import sys
 from PyQt5.QtWidgets import QWidget, QApplication, QDialog, QMainWindow, QAction, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox, QMenu, QLineEdit,QCheckBox,QSpinBox,QSlider,QTextEdit,QTabWidget,QLabel,QGridLayout,QPushButton
 from PyQt5 import uic
 from PyQt5.QtCore import QByteArray, Qt, QSettings, QTimer
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QPixmap, QColor
 import os.path
 import os
 from os import walk
@@ -38,11 +38,23 @@ import zlib
 import tempfile
 from spcharts import Bitrate_Chart, BitGraph, NavigationToolbar
 import logging
+import string
+import json
 
 dataScanned=32
 dataFilenameStr=33
 dataRawOutput=34
 dataBitrate=35
+
+# define some colours
+colourQualityUnknown = QColor(Qt.lightGray)
+colourQualityUnknown.setAlpha(100)
+colourQualityGood = QColor(Qt.green)
+colourQualityGood.setAlpha(100)
+colourQualityWarning = QColor(Qt.yellow)
+colourQualityWarning.setAlpha(100)
+colourQualityBad = QColor(Qt.red)
+colourQualityBad.setAlpha(100)
 
 defaultfilemask = r"\.mp3$|\.flac$|\.mpc$|\.ogg$|\.wav$|\.m4a$|\.aac$|\.ac3$|\.ra$|\.au$"
 
@@ -92,13 +104,25 @@ def findBinary(settings_key="", nt_path="", posix_path=""):
         
     return bin
 
-findGuessEncBin = partial(findBinary,'Paths/mp3guessenc_bin','scanners/mp3guessenc.exe','/usr/bin/mp3guessenc')
+findGuessEncBin = partial(findBinary,'Paths/mp3guessenc_bin','scanners/mp3guessenc.exe','/usr/local/bin/mp3guessenc')
 findMediaInfoBin = partial(findBinary,'Paths/mediainfo_bin','scanners/MediaInfo.exe','/usr/bin/mediainfo')
 findFlacBin = partial(findBinary,'Paths/flac_bin','scanners/flac.exe','/usr/bin/flac')
 findauCDtectBin = partial(findBinary,'Paths/aucdtect_bin','scanners/auCDtect.exe','/usr/bin/aucdtect')
 findSoxBin = partial(findBinary,'Paths/sox_bin','scanners/sox.exe','/usr/bin/sox')
-findffprobeBin = partial(findBinary,'Paths/ffprobe_bin','scanners/ffmpeg/ffprobe.exe','/usr/bin/ffprobe')
-    
+
+def findffprobeBin(settings_key='Paths/ffprobe_bin', nt_path='scanners/ffmpeg/ffprobe.exe', posix_path='/usr/bin/ffprobe'):
+    bin = settings.value(settings_key)
+    if bin is None:
+        if os.name == 'nt':
+            return nt_path
+        elif os.name == 'posix':
+            if os.path.exists(posix_path): # ffprobe
+                return posix_path
+            elif os.path.exists(os.path.dirname(posix_path) + "/avprobe"): # also try avprobe
+                return os.path.dirname(posix_path) + "/avprobe"
+        
+    return bin
+        
 def getTempFileName():
     temp_file = tempfile.NamedTemporaryFile()
     temp_file_str = temp_file.name
@@ -106,9 +130,9 @@ def getTempFileName():
     return temp_file_str
     
 
-def scanner_Thread(row,filenameStr,binary,options,debug_enabled):
+def scanner_Thread(row,filenameStr,binary,scanner_name,options,debug_enabled):
 # run scanner on filenameStr as separate process
-# and return output as string
+# and return output as strings
     if debug_enabled:
         debug_log("thread started for row {}, file: {}".format(row,filenameStr))
     try:
@@ -116,7 +140,7 @@ def scanner_Thread(row,filenameStr,binary,options,debug_enabled):
         output_str = output.decode(sys.stdout.encoding)
     except:
         output_str = "Error"
-    return row,output_str,filenameStr
+    return row,output_str,filenameStr,scanner_name
 
 def aucdtect_Thread(row,filenameStr,decoder_bin,decoder_options,aucdtect_bin,aucdtect_options,debug_enabled):
     if debug_enabled:
@@ -136,9 +160,56 @@ def aucdtect_Thread(row,filenameStr,decoder_bin,decoder_options,aucdtect_bin,auc
         
     return (row,output_str,filenameStr)
 
+def scanner_Finished(fileinfo):
+# callback function
+# runs after scanner process has completed
+    i = fileinfo[0]
+    scanner_output = fileinfo[1]
+    filenameStr = fileinfo[2]
+    scanner_name = fileinfo[3]
+    global task_count
+    task_count -= 1
+
+    if not (scanner_output == "Error"):
+        if scanner_name == "mp3guessenc":
+            song_info = parse_mp3guessenc_output(scanner_output)
+        elif scanner_name == "mediainfo":
+            song_info = parse_mediainfo_output(scanner_output)
+        else: # unknown
+            debug_log("scanner thread finished but scanner unknown")
+            return
+        if debug_enabled:
+            debug_log("thread finished - row {}, result: {}, task count={}".format(i,song_info['encoder'],task_count))
+    
+        main_q.put((i,song_info,scanner_output))
+    else:
+        main_q.put((i,{'error':True},scanner_output))
+        if debug_enabled:
+            debug_log("thread finished with error - row {}, result: {}, task count={}".format(i,scanner_output,task_count))
+
+def aucdtect_Finished(fileinfo):
+# callback function
+    i = fileinfo[0]
+    scanner_output = fileinfo[1]
+    filenameStr = fileinfo[2]
+    global task_count
+    task_count -= 1
+
+    if not (scanner_output == "Error"):
+        song_info = parse_aucdtect_output(scanner_output)
+
+        if debug_enabled:
+            debug_log("aucdtect thread finished - row {}, result: {}, task count={}".format(i,song_info['aucdtect_quality'],task_count))
+    
+        main_q.put((i,song_info,scanner_output))
+    else:
+        main_q.put((i,{'error':True},scanner_output))
+        if debug_enabled:
+            debug_log("aucdtect thread finished with error - row {}, result: {}, task count={}".format(i,scanner_output,task_count))
+
     
 if __name__ == '__main__':
-    TableHeaders = ["Folder","Filename","Length","Bitrate","Filesize","Encoder","Quality"]
+    TableHeaders = ["Folder","Filename","Length","Bitrate","Mode","Frequency","Filesize","Encoder","Quality"]
     task_count = 0
 
 if __name__ == '__main__':
@@ -146,21 +217,31 @@ if __name__ == '__main__':
     guessenc_encoder_string_regex = re.compile(r"^Encoder string \: (.*)",re.MULTILINE)
     guessenc_bitrate_regex = re.compile(r"Data rate.*\: (.*)",re.MULTILINE)
     guessenc_length_regex = re.compile(r"Length.*\: ([\d\:\.]*)",re.MULTILINE)
+    guessenc_frequency_regex = re.compile(r"^\s*Audio frequency\s*: (\d*) Hz",re.MULTILINE)
+    guessenc_mode_regex = re.compile(r"Detected MPEG stream.*?Encoding mode\s*?: (.*?)\n",re.DOTALL)
     guessenc_filesize_regex = re.compile(r"Detected .*?\n  File size.*?\: (\d*) bytes",re.MULTILINE)
     guessenc_frame_hist_regex = re.compile(r"Frame histogram(.*?)(\d*) header errors",re.DOTALL)
     guessenc_block_usage_regex = re.compile(r"^Block usage(.*?)-",re.DOTALL|re.MULTILINE)
     guessenc_mode_count_regex = re.compile(r"^Mode extension: (.*?)--",re.DOTALL|re.MULTILINE)
+    guessenc_header_errors_regex = re.compile(r"^\s*(\d*) header errors",re.MULTILINE)
     mediainfo_format_regex = re.compile(r"^Audio.*?Format.*?\: (.*?)$",re.DOTALL|re.MULTILINE)
     mediainfo_encoder_regex = re.compile(r"^Writing library.*\: (.*)",re.MULTILINE)
     mediainfo_length_regex = re.compile(r"^Audio.*?Duration.*?\: (.*?)$",re.DOTALL|re.MULTILINE)
     mediainfo_bitrate_regex = re.compile(r"^Bit rate.*\: ([\d\. ]* [MK]bps)",re.MULTILINE)
     mediainfo_filesize_regex = re.compile(r"^File size.*\: (.* .iB|.* Bytes)",re.MULTILINE)
-    aucdtect_regex = re.compile(r"^This track looks like (.*) with probability (\d*%)",re.MULTILINE)
+    aucdtect_regex = re.compile(r"^This track looks like (.*) with probability (\d*)%",re.MULTILINE)
     mp3_bitrate_data_regex = re.compile(r"(\d*?) kbps \: *(\d*?) \(")
 
-def doMP3Checks(mp3guessenc_output):
+    
+def doMP3Checks(bitrate,encoder,encoder_string,header_errors,mp3guessenc_output):
 # do some MP3 quality checks here
-    return True
+    colour = colourQualityUnknown
+    
+    if int(header_errors) > 0:
+        colour = colourQualityBad
+
+    return colour
+
     
 def format_bytes(num, suffix='B'):
     for unit in ['','Ki','Mi','Gi','Ti','Pi','Ei','Zi']:
@@ -196,6 +277,9 @@ def parse_mp3guessenc_output(mp3guessenc_output):
     frame_hist=() # tuple containing two sets of int lists
     block_usage=""
     mode_count=""
+    mode=""
+    frequency=""
+    header_errors=0
 
     search = guessenc_encoder_regex.search(mp3guessenc_output)
     if search is not None:
@@ -221,12 +305,22 @@ def parse_mp3guessenc_output(mp3guessenc_output):
     search = guessenc_mode_count_regex.search(mp3guessenc_output)
     if search is not None:
         mode_count=search.group(1)
+    search = guessenc_mode_regex.search(mp3guessenc_output)
+    if search is not None:
+        mode=string.capwords(search.group(1))
+    search = guessenc_frequency_regex.search(mp3guessenc_output)
+    if search is not None:
+        frequency_int=int(search.group(1))
+        frequency = "{} KHz".format(frequency_int/1000)
+    search = guessenc_header_errors_regex.search(mp3guessenc_output)
+    if search is not None:
+        header_errors=search.group(1)
 
-    checks_ok = doMP3Checks(mp3guessenc_output)
+    quality_colour = doMP3Checks(bitrate,encoder,encoder_string,header_errors,mp3guessenc_output)
         
     return {'encoder':encoder, 'audio_format':'MP3', 'bitrate':bitrate ,'encoder_string':encoder_string, 
-            'length':length, 'filesize':filesize, 'checks_ok':checks_ok, 'error':False, 'frame_hist':frame_hist, 
-            'block_usage':block_usage, 'mode_count':mode_count,'quality':None}
+            'length':length, 'filesize':filesize, 'error':False, 'frame_hist':frame_hist, 
+            'block_usage':block_usage, 'mode_count':mode_count, 'mode':mode,'frequency':frequency,'quality':None,'quality_colour':quality_colour }
 
 def parse_mediainfo_output(mediainfo_output):
     encoder=""
@@ -235,7 +329,6 @@ def parse_mediainfo_output(mediainfo_output):
     length=""
     filesize=""
     audio_format="Unknown"
-    checks_ok = False
 
     search = mediainfo_encoder_regex.search(mediainfo_output)
     if search is not None:
@@ -256,13 +349,14 @@ def parse_mediainfo_output(mediainfo_output):
     search = mediainfo_filesize_regex.search(mediainfo_output)
     if search is not None:
         filesize=search.group(1)
-
+        
     return {'encoder':encoder, 'audio_format':audio_format, 'bitrate':bitrate ,'encoder_string':encoder_string, 
-            'length':length, 'filesize':filesize, 'checks_ok':checks_ok, 'error':False, 'quality':None }
+            'length':length, 'filesize':filesize, 'error':False, 'quality':None}
 
 def parse_aucdtect_output(aucdtect_output):
     detection = ""
     probability = ""
+    quality_colour = colourQualityUnknown
 
     search = aucdtect_regex.search(aucdtect_output)
     if search is not None:
@@ -271,57 +365,31 @@ def parse_aucdtect_output(aucdtect_output):
     else:
         detection="Unknown"
 
-    return {'error':False,'quality':"{} {}".format(detection,probability)}
+    try:
+        prob_int = int(probability)
+    except ValueError:
+        prob_int = 0
+        
+    if detection == "CDDA":
+        if prob_int > 90:
+            quality_colour = colourQualityGood
+        else:
+            quality_colour = colourQualityWarning
+    elif detection == "MPEG":
+        if prob_int > 90:
+            quality_colour = colourQualityBad
+        else:
+            quality_colour = colourQualityWarning
+    
+    if not detection == "Unknown":
+        aucdtect_quality = "{} {}%".format(detection,probability)
+    else:
+        aucdtect_quality = detection
+    
+    return {'error':False,'aucdtect_quality':aucdtect_quality,'quality_colour':quality_colour}
     
 def md5Str(Str):
     return md5(Str.encode('utf-8')).hexdigest()
-    
-def scanner_Finished(fileinfo):
-# callback function
-# runs after scanner process has completed
-    i = fileinfo[0]
-    scanner_output = fileinfo[1]
-    filenameStr = fileinfo[2]
-    global task_count
-    task_count -= 1
-
-    if not (scanner_output == "Error"):
-        if fnmatch.fnmatch(filenameStr, "*.mp3"):
-            song_info = parse_mp3guessenc_output(scanner_output)
-        elif fnmatch.fnmatch(filenameStr, "*.flac"):
-            song_info = parse_mediainfo_output(scanner_output)
-        else: # default to mediainfo... 
-            song_info = parse_mediainfo_output(scanner_output)
-
-        if debug_enabled:
-            debug_log("thread finished - row {}, result: {}, task count={}".format(i,song_info['encoder'],task_count))
-    
-        main_q.put((i,song_info,scanner_output))
-    else:
-        main_q.put((i,{'error':True},scanner_output))
-        if debug_enabled:
-            debug_log("thread finished with error - row {}, result: {}, task count={}".format(i,scanner_output,task_count))
-
-def aucdtect_Finished(fileinfo):
-# callback function
-    i = fileinfo[0]
-    scanner_output = fileinfo[1]
-    filenameStr = fileinfo[2]
-    global task_count
-    task_count -= 1
-
-    if not (scanner_output == "Error"):
-        song_info = parse_aucdtect_output(scanner_output)
-
-        if debug_enabled:
-            debug_log("aucdtect thread finished - row {}, result: {}, task count={}".format(i,song_info['quality'],task_count))
-    
-        main_q.put((i,song_info,scanner_output))
-    else:
-        main_q.put((i,{'error':True},scanner_output))
-        if debug_enabled:
-            debug_log("aucdtect thread finished with error - row {}, result: {}, task count={}".format(i,scanner_output,task_count))
-
             
 def headerIndexByName(table,headerName):
     index = -1
@@ -332,37 +400,33 @@ def headerIndexByName(table,headerName):
     return index
     
 def makeBitGraph(fn,grid,ffprobe_bin):
-    temp_file = tempfile.NamedTemporaryFile(delete=False)
     try:
-#        subprocess.call([ffprobe_bin,"-show_frames","-show_entries","frame=pkt_pts_time,pkt_size,pkt_duration_time","-print_format","csv=print_section=0",fn],stdout=temp_file,stderr=subprocess.PIPE)
-        subprocess.call([ffprobe_bin,"-show_packets","-show_entries","packet=pts_time,size,duration_time","-print_format","csv=print_section=0",fn],stdout=temp_file,stderr=subprocess.PIPE)
+        output = subprocess.check_output([ffprobe_bin,"-show_packets","-of","json",fn],stderr=None)
+        output_str = output.decode(sys.stdout.encoding)
     except Exception as e:
         if debug_enabled:
             debug_log(e)
             return None
     
-    temp_file_str = temp_file.name
-    temp_file.close()
-    temp_file = open(temp_file_str)
-    
     x_list = []
     y_list = []
     
-    for line in temp_file:
-        xy = (line.split(","))
-
-        if xy[0] == "N/A":
+    json_packet_data = json.loads(output_str)
+    packets = json_packet_data["packets"]
+    
+    for dict in packets:
+        if not dict["codec_type"] == "audio":
             continue
         try:
-            x = float(xy[0]) # time
+            x = float(dict["pts_time"]) # time
         except (ValueError, OverflowError) as e:
             x = 0
         try:
-            t = float(xy[1]) # duration
+            t = float(dict["duration_time"]) # duration
         except (ValueError, OverflowError) as e:
             t = 0
         try:
-            sz = int(xy[2]) # size in bytes
+            sz = float(dict["size"]) # size in bytes
         except (ValueError, OverflowError) as e:
             sz = 0
         try:
@@ -374,8 +438,6 @@ def makeBitGraph(fn,grid,ffprobe_bin):
             y_list.append(y) # bitrate
             x_list.append(round(x,3))
         
-    temp_file.close()
-
 #uncomment this to write out bitrate data in csv
     
 #    if debug_enabled:
@@ -383,9 +445,7 @@ def makeBitGraph(fn,grid,ffprobe_bin):
 #        for i in range(0,len(x_list)):
 #            temp_file.write(str(x_list[i]) + "," + str(y_list[i]) + "\n")
 #        temp_file.close()
-#    else:
-    os.remove(temp_file_str)
-            
+    
     return ((x_list,y_list),fn,grid)
 
 class FileInfo(QDialog):
@@ -831,6 +891,8 @@ class Main(QMainWindow):
                     lengthItem = QTableWidgetItem("")
                     filesizeItem = QTableWidgetItem("")
                     qualityItem = QTableWidgetItem("")
+                    frequencyItem = QTableWidgetItem("")
+                    modeItem = QTableWidgetItem("")
                     
                     if usecache:
                         hashStr = filenameStr + str(os.path.getmtime(filenameStr))
@@ -847,6 +909,15 @@ class Main(QMainWindow):
                             quality = filecache.value('{}/Quality'.format(filemd5))
                             if quality is not None:
                                 qualityItem.setText(quality)
+                            frequency = filecache.value('{}/Frequency'.format(filemd5))
+                            if frequency is not None:
+                                frequencyItem.setText(frequency)
+                            mode = filecache.value('{}/Mode'.format(filemd5))
+                            if mode is not None:
+                                modeItem.setText(mode)
+                            quality_colour = filecache.value('{}/QualityColour'.format(filemd5))
+                            if quality_colour is not None:
+                                qualityItem.setBackground(quality_colour)
                             if cached_output is not None:
                                 scanner_output = zlib.decompress(cached_output)
                                 codecItem.setData(dataRawOutput,scanner_output.decode('utf-8'))
@@ -860,6 +931,8 @@ class Main(QMainWindow):
                     self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Length"), lengthItem)
                     self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Filesize"), filesizeItem)
                     self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Quality"), qualityItem)
+                    self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Frequency"), frequencyItem)
+                    self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Mode"), modeItem)
                                                       
                     self.statusBar().showMessage("Scanning for files: {} found".format(i))
                     
@@ -882,23 +955,40 @@ class Main(QMainWindow):
             global stop_tasks
             stop_tasks = True
         
-    def update_Table(self,row,song_info,scanner_output):
+    def update_Table(self,row,song_info,scanner_output,usecache=True):
         # update table with info from scanner
             error_status = song_info['error']
             if not error_status:
-                quality = song_info['quality']
-                if quality is not None:
+                filenameItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Filename"))
+                filenameStr = filenameItem.data(dataFilenameStr)
+#                usecache = settings.value('Options/UseCache',True, type=bool)
+                if usecache:
+                    hashStr = filenameStr + str(os.path.getmtime(filenameStr))
+                    filemd5 = md5Str(hashStr)
+
+                try:
+                    quality_colour = song_info['quality_colour']
+                except KeyError:
+                    quality_colour = None
+                    
+                if quality_colour is not None:
+                    qualityItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Quality"))
+                    qualityItem.setBackground(quality_colour)
+                    if usecache:
+                        filecache.setValue('{}/QualityColour'.format(filemd5),qualityItem.background())
+                
+                try:
+                    aucdtect_quality = song_info['aucdtect_quality']
+                except KeyError:
+                    aucdtect_quality = None
+
+                if aucdtect_quality is not None:
                     # aucdtect
                     qualityItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Quality"))
-                    qualityItem.setText(quality)
-                    if settings.value('Options/UseCache',True, type=bool) == True:
-                        filenameItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Filename"))
-                        filenameStr = filenameItem.data(dataFilenameStr)
-                        hashStr = filenameStr + str(os.path.getmtime(filenameStr))
-                        filemd5 = md5Str(hashStr)
-                        filecache.setValue('{}/Quality'.format(filemd5),qualityItem.text())
-                else:
-                    filenameItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Filename"))
+                    qualityItem.setText(aucdtect_quality)
+                    if usecache:
+                        filecache.setValue('{}/Quality'.format(filemd5),aucdtect_quality)
+                else: # not aucdtect
                     filenameItem.setData(dataScanned, True) # boolean, true if file already scanned
                     codecItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Encoder"))
                     encoder_string = song_info['encoder_string']
@@ -918,29 +1008,43 @@ class Main(QMainWindow):
                     try:
                         frame_hist = song_info['frame_hist']
                         bitrateItem.setData(dataBitrate,frame_hist)
-                    except:
+                    except KeyError:
                         pass
+                        
+                    try:
+                        frequencyItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Frequency"))
+                        frequency = song_info['frequency']
+                        frequencyItem.setText(frequency)
+                    except KeyError:
+                        pass
+                        
+                    try:
+                        modeItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Mode"))
+                        mode = song_info['mode']
+                        modeItem.setText(mode)
+                    except KeyError:
+                        pass
+
                     lengthItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Length"))
                     lengthItem.setText(song_info['length'])
                     filesizeItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Filesize"))
                     filesizeItem.setText(song_info['filesize'])
 
-                    if settings.value('Options/UseCache',True, type=bool) == True:
-                        filenameStr = filenameItem.data(dataFilenameStr)
-                        hashStr = filenameStr + str(os.path.getmtime(filenameStr))
-                        filemd5 = md5Str(hashStr)
+                    if usecache:
                         filecache.setValue('{}/Encoder'.format(filemd5),codecItem.text())
                         filecache.setValue('{}/Bitrate'.format(filemd5),bitrateItem.text())
                         filecache.setValue('{}/Length'.format(filemd5),lengthItem.text())
                         filecache.setValue('{}/Filesize'.format(filemd5),filesizeItem.text())
+                        filecache.setValue('{}/Mode'.format(filemd5),modeItem.text())
+                        filecache.setValue('{}/Frequency'.format(filemd5),frequencyItem.text())
                         try:
                             filecache.setValue('{}/FrameHist'.format(filemd5),bitrateItem.data(dataBitrate))
-                        except:
-                            pass
+                        except KeyError:
+                            filecache.remove('{}/FrameHist'.format(filemd5))
                         if settings.value('Options/CacheRawOutput',False, type=bool) == True:
                             filecache.setValue('{}/RawOutput'.format(filemd5),zlib.compress(scanner_output.encode('utf-8')))
 
-            else:
+            else: # error status
                 codecItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Encoder"))
                 codecItem.setText("error scanning file")
                 codecItem.setData(dataRawOutput,scanner_output)
@@ -1000,16 +1104,23 @@ class Main(QMainWindow):
                 if debug_enabled:
                     debug_log("Queuing process for file {}".format(filenameStr))
                     
-                if fnmatch.fnmatch(filenameStr, "*.mp3") and not mp3guessencbin == "":
-                    pool.apply_async(scanner_Thread, args=(i,filenameStr,mp3guessencbin,"-e",debug_enabled), callback=scanner_Finished) # queue processes
-                    task_count += 1
-                    task_total += 1
+                if fnmatch.fnmatch(filenameStr, "*.mp3"):
+                    # use mp3guessenc if available
+                    if not mp3guessencbin == "":
+                        pool.apply_async(scanner_Thread, args=(i,filenameStr,mp3guessencbin,"mp3guessenc","-e",debug_enabled), callback=scanner_Finished) # queue processes
+                        task_count += 1
+                        task_total += 1
+                    elif not mediainfo_bin == "": # fall back to mediainfo
+                        pool.apply_async(scanner_Thread, args=(i,filenameStr,mediainfo_bin,"mediainfo","-",debug_enabled), callback=scanner_Finished)
+                        task_count += 1
+                        task_total += 1
+                        
                 elif fnmatch.fnmatch(filenameStr, "*.flac") and not mediainfo_bin == "":
-                    pool.apply_async(scanner_Thread, args=(i,filenameStr,mediainfo_bin,"-",debug_enabled), callback=scanner_Finished) # queue processes
+                    pool.apply_async(scanner_Thread, args=(i,filenameStr,mediainfo_bin,"mediainfo","-",debug_enabled), callback=scanner_Finished)
                     task_count += 1
                     task_total += 1
                 elif not mediainfo_bin == "":
-                    pool.apply_async(scanner_Thread, args=(i,filenameStr,mediainfo_bin,"-",debug_enabled), callback=scanner_Finished) # queue processes
+                    pool.apply_async(scanner_Thread, args=(i,filenameStr,mediainfo_bin,"mediainfo","-",debug_enabled), callback=scanner_Finished)
                     task_count += 1
                     task_total += 1
 
@@ -1026,7 +1137,8 @@ class Main(QMainWindow):
         pool.close()
 
         self.statusBar().showMessage('Scanning files...')
-
+        usecache = settings.value('Options/UseCache',True, type=bool)
+        
         global stop_tasks
         while (task_count > 0) and (not stop_tasks):
             tasks_done = task_total - task_count
@@ -1040,7 +1152,7 @@ class Main(QMainWindow):
                 row = q_info[0]
                 song_info = q_info[1]
                 scanner_output = q_info[2]
-                self.update_Table(row,song_info,scanner_output)
+                self.update_Table(row,song_info,scanner_output,usecache)
                         
         if debug_enabled:
             debug_log("all threads finished, task count={}".format(task_count))
@@ -1055,7 +1167,7 @@ class Main(QMainWindow):
             row = q_info[0]
             song_info = q_info[1]
             scanner_output = q_info[2]
-            self.update_Table(row,song_info,scanner_output)
+            self.update_Table(row,song_info,scanner_output,usecache)
                            
         self.ui.progressBar.setValue(100)
         self.statusBar().showMessage('Done')
