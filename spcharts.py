@@ -73,7 +73,7 @@ class BitGraph(FigureCanvas):
                 max = num
             if num < min:
                 min = num
-        self.axes.plot(x,y)
+        self.axes.plot(x,y,color="blue",drawstyle='steps',linewidth=0.25)
         self.axes.set_ylabel('Bitrate (Kb/s)')
         self.axes.set_xlabel('Time (s)')
         x_lim = x[len(x)-1]

@@ -30,15 +30,15 @@ import string
 import subprocess
 import sys
 import tempfile
-import zlib
+from zlib import compress,decompress
 from functools import partial
 from hashlib import md5
 from io import TextIOWrapper
 from time import sleep
 
-from PyQt5.QtCore import Qt, QSettings, QTimer, QThreadPool, QRunnable
+from PyQt5.QtCore import Qt, QSettings, QTimer, QThreadPool, QRunnable, QMutex
 from PyQt5.QtGui import QPixmap, QColor
-from PyQt5.QtWidgets import QWidget, QApplication, QDialog, QMainWindow, QAction, QFileDialog, QTableWidgetItem, QMessageBox, QMenu, QLineEdit,QCheckBox,QSpinBox,QSlider,QTextEdit,QTabWidget,QLabel,QGridLayout,QPushButton
+from PyQt5.QtWidgets import QWidget, QApplication, QDialog, QDialogButtonBox,QMainWindow, QAction, QFileDialog, QTableWidgetItem, QMessageBox, QMenu, QLineEdit,QCheckBox,QSpinBox,QSlider,QTextEdit,QTabWidget,QLabel,QGridLayout,QPushButton
 from spcharts import Bitrate_Chart, BitGraph, NavigationToolbar
 from spct_info import Ui_FileInfoDialog
 from spct_main import Ui_MainWindow
@@ -48,6 +48,8 @@ dataScanned=32
 dataFilenameStr=33
 dataRawOutput=34
 dataBitrate=35
+
+aucdtect_confidence_threshold=90 # aucdtect results considered accurate when probability is higher than this
 
 # define some colours
 colourQualityUnknown = QColor(Qt.lightGray)
@@ -90,7 +92,6 @@ if __name__ == '__main__':
     filecache = QSettings(QSettings.IniFormat,QSettings.UserScope,"Specton","Specton-cache")
         
     debug_enabled = settings.value("Options/Debug", False, type=bool)
-    stop_tasks = False
     
     logging.basicConfig(level=logging.DEBUG, format='%(relativeCreated)6d %(threadName)s - %(message)s')
 
@@ -149,8 +150,10 @@ class scanner_Thread(QRunnable):
         except:
             output_str = "Error"
 
+        qm.lock()
         global task_count
         task_count -= 1
+        qm.unlock()
 
         if not (output_str == "Error"):
             if self.scanner_name == "mp3guessenc":
@@ -185,9 +188,13 @@ class aucdtect_Thread(QRunnable):
             debug_log("aucdtect thread started for row {}, file: {}".format(self.row,self.filenameStr))
         try:
             temp_file = getTempFileName()
-            decoder_output = subprocess.check_output([self.decoder_bin,self.decoder_options,self.filenameStr,"-o",temp_file],stderr=subprocess.PIPE)
-            aucdtect_output = subprocess.check_output([self.aucdtect_bin,self.aucdtect_options,temp_file],stderr=subprocess.PIPE)
-            output_str = aucdtect_output.decode(sys.stdout.encoding)
+            if not self.decoder_bin == "": # need to decode to wav
+                decoder_output = subprocess.check_output([self.decoder_bin,self.decoder_options,self.filenameStr,"-o",temp_file],stderr=subprocess.PIPE)
+                aucdtect_output = subprocess.check_output([self.aucdtect_bin,self.aucdtect_options,temp_file],stderr=subprocess.PIPE)
+                output_str = aucdtect_output.decode(sys.stdout.encoding)
+            else:
+                aucdtect_output = subprocess.check_output([self.aucdtect_bin,self.aucdtect_options,self.filenameStr],stderr=subprocess.PIPE)            
+                output_str = aucdtect_output.decode(sys.stdout.encoding)
         except:
             output_str = "Error"
     
@@ -196,8 +203,10 @@ class aucdtect_Thread(QRunnable):
         except OSError:
             pass
         
+        qm.lock()
         global task_count
         task_count -= 1
+        qm.unlock()
 
         if not (output_str == "Error"):
             song_info = parse_aucdtect_output(output_str)
@@ -214,6 +223,7 @@ class aucdtect_Thread(QRunnable):
             
 if __name__ == '__main__':
     TableHeaders = ["Folder","Filename","Length","Bitrate","Mode","Frequency","Filesize","Encoder","Quality"]
+    qm = QMutex()
     task_count = 0
 
 if __name__ == '__main__':
@@ -232,7 +242,10 @@ if __name__ == '__main__':
     mediainfo_encoder_regex = re.compile(r"^Writing library.*\: (.*)",re.MULTILINE)
     mediainfo_length_regex = re.compile(r"^Audio.*?Duration.*?\: (.*?)$",re.DOTALL|re.MULTILINE)
     mediainfo_bitrate_regex = re.compile(r"^Bit rate.*\: ([\d\. ]* [MK]bps)",re.MULTILINE)
+    mediainfo_bitrate_mode_regex = re.compile(r"^Audio.*Bit rate mode\s*: ([A-Za-z]*)",re.MULTILINE|re.DOTALL) # variable or constant
     mediainfo_filesize_regex = re.compile(r"^File size.*\: (.* .iB|.* Bytes)",re.MULTILINE)
+    mediainfo_frequency_regex = re.compile(r"^Audio.*Sampling rate\s*: ([\d\.]* KHz)",re.MULTILINE|re.DOTALL)
+    mediainfo_mode_regex = re.compile(r"^Audio.*Mode\s*: ([a-zA-Z ]*)",re.MULTILINE|re.DOTALL) # stereo/js
     aucdtect_regex = re.compile(r"^This track looks like (.*) with probability (\d*)%",re.MULTILINE)
     mp3_bitrate_data_regex = re.compile(r"(\d*?) kbps \: *(\d*?) \(")
 
@@ -275,6 +288,7 @@ def parse_mp3guessenc_output(mp3guessenc_output):
 # return parsed variables as a dictionary
     encoder=""
     bitrate=""
+    bitrate_mode="" # vbr or cbr
     encoder_string=""
     length=""
     filesize=""
@@ -284,6 +298,7 @@ def parse_mp3guessenc_output(mp3guessenc_output):
     mode=""
     frequency=""
     header_errors=0
+    format_mode=""
 
     search = guessenc_encoder_regex.search(mp3guessenc_output)
     if search is not None:
@@ -312,6 +327,10 @@ def parse_mp3guessenc_output(mp3guessenc_output):
     search = guessenc_mode_regex.search(mp3guessenc_output)
     if search is not None:
         mode=string.capwords(search.group(1))
+        if mode.lower() == "stereo":
+            mode = "S"
+        elif mode.lower() == "joint stereo":
+            mode = "JS"
     search = guessenc_frequency_regex.search(mp3guessenc_output)
     if search is not None:
         frequency_int=int(search.group(1))
@@ -319,12 +338,24 @@ def parse_mp3guessenc_output(mp3guessenc_output):
     search = guessenc_header_errors_regex.search(mp3guessenc_output)
     if search is not None:
         header_errors=search.group(1)
+        
+    if len(frame_hist[0]) > 1:
+        bitrate_mode = "VBR"
+    elif len(frame_hist[0]) == 1:
+        bitrate_mode = "CBR"
+        
+    if (not mode == "") and (not bitrate_mode == ""):
+        format_mode = "{}/{}".format(mode,bitrate_mode)
+    elif (not mode == "") and (bitrate_mode == ""):
+        format_mode = "{}".format(mode)
+    elif (mode == "") and (not bitrate_mode == ""):
+        format_mode = "{}".format(bitrate_mode)
 
     quality_colour = doMP3Checks(bitrate,encoder,encoder_string,header_errors,mp3guessenc_output)
         
     return {'encoder':encoder, 'audio_format':'MP3', 'bitrate':bitrate ,'encoder_string':encoder_string, 
             'length':length, 'filesize':filesize, 'error':False, 'frame_hist':frame_hist, 
-            'block_usage':block_usage, 'mode_count':mode_count, 'mode':mode,'frequency':frequency,'quality':None,'quality_colour':quality_colour }
+            'block_usage':block_usage, 'mode_count':mode_count, 'mode':format_mode,'frequency':frequency,'quality':None,'quality_colour':quality_colour }
 
 def parse_mediainfo_output(mediainfo_output):
     encoder=""
@@ -333,6 +364,10 @@ def parse_mediainfo_output(mediainfo_output):
     length=""
     filesize=""
     audio_format="Unknown"
+    frequency=""
+    bitrate_mode=""
+    mode=""
+    format_mode=""
 
     search = mediainfo_encoder_regex.search(mediainfo_output)
     if search is not None:
@@ -354,8 +389,35 @@ def parse_mediainfo_output(mediainfo_output):
     if search is not None:
         filesize=search.group(1)
         
+    search = mediainfo_bitrate_mode_regex.search(mediainfo_output)
+    if search is not None:
+        bitrate_mode=search.group(1) # vbr/cbr
+        if bitrate_mode.lower() == "constant":
+            bitrate_mode = "CBR"
+        elif bitrate_mode.lower() == "variable":
+            bitrate_mode = "VBR"
+        
+    search = mediainfo_mode_regex.search(mediainfo_output)
+    if search is not None:
+        mode=search.group(1) # stereo/js
+        if mode.lower() == "stereo":
+            mode = "S"
+        elif mode.lower() == "joint stereo":
+            mode = "JS"
+        
+    search = mediainfo_frequency_regex.search(mediainfo_output)
+    if search is not None:
+        frequency = search.group(1)
+
+    if (not mode == "") and (not bitrate_mode == ""):
+        format_mode = "{}/{}".format(mode,bitrate_mode)
+    elif (not mode == "") and (bitrate_mode == ""):
+        format_mode = "{}".format(mode)
+    elif (mode == "") and (not bitrate_mode == ""):
+        format_mode = "{}".format(bitrate_mode)
+            
     return {'encoder':encoder, 'audio_format':audio_format, 'bitrate':bitrate ,'encoder_string':encoder_string, 
-            'length':length, 'filesize':filesize, 'error':False, 'quality':None}
+            'length':length,'mode':format_mode,'frequency':frequency, 'filesize':filesize, 'error':False, 'quality':None}
 
 def parse_aucdtect_output(aucdtect_output):
     detection = ""
@@ -375,12 +437,12 @@ def parse_aucdtect_output(aucdtect_output):
         prob_int = 0
         
     if detection == "CDDA":
-        if prob_int > 90:
+        if prob_int > aucdtect_confidence_threshold:
             quality_colour = colourQualityGood
         else:
             quality_colour = colourQualityWarning
     elif detection == "MPEG":
-        if prob_int > 90:
+        if prob_int > aucdtect_confidence_threshold:
             quality_colour = colourQualityBad
         else:
             quality_colour = colourQualityWarning
@@ -396,6 +458,7 @@ def md5Str(Str):
     return md5(Str.encode('utf-8')).hexdigest()
             
 def headerIndexByName(table,headerName):
+# find column in tablewidget from headerName
     index = -1
     for i in range(0, table.columnCount()):
         headerItem = table.horizontalHeaderItem(i)
@@ -404,6 +467,7 @@ def headerIndexByName(table,headerName):
     return index
     
 class makeBitGraphThread(QRunnable):
+# generate bitrate graph using ffprobe/avprobe
     def __init__(self,fn,grid,ffprobe_bin):
         super(makeBitGraphThread, self).__init__()
         self.fn = fn
@@ -412,7 +476,7 @@ class makeBitGraphThread(QRunnable):
 
     def run(self):
         try:
-            output = subprocess.check_output([self.ffprobe_bin,"-show_packets","-of","json",self.fn],stderr=None)
+            output = subprocess.check_output([self.ffprobe_bin,"-show_packets","-of","json",self.fn],stderr=subprocess.PIPE)
             output_str = output.decode(sys.stdout.encoding)
         except Exception as e:
             if debug_enabled:
@@ -500,7 +564,7 @@ class FileInfo(QDialog):
                 
         updateGuiTimer = QTimer(self)
         updateGuiTimer.timeout.connect(self.updateGui)
-        updateGuiTimer.setInterval(1000)
+        updateGuiTimer.setInterval(100)
         updateGuiTimer.start()
                 
         if settings.value('Options/EnableSpectrogram',True, type=bool):
@@ -531,7 +595,7 @@ class FileInfo(QDialog):
                
          
     def updateGui(self):
-    # called from timer every 1s
+    # called from timer
     # subprocesses post to queue when finished
         if not infodlg_q.empty():
             update_info = infodlg_q.get(False,1)
@@ -572,6 +636,9 @@ class FileInfo(QDialog):
                             layout.addWidget(mpl_toolbar)
                 except Exception as e:
                     debug_log(e)
+
+            elif update_type == "Scanner_Output":
+                pass
                         
     def closeEvent(self,event):
         windowGeometry = self.saveGeometry()
@@ -633,6 +700,8 @@ class Options(QDialog):
         lineEdit_sox_path.setText(findSoxBin())
         lineEdit_ffprobe_path = self.findChild(QLineEdit, "lineEdit_ffprobe_path")
         lineEdit_ffprobe_path.setText(findffprobeBin())
+        lineEdit_aucdtect_path = self.findChild(QLineEdit, "lineEdit_aucdtect_path")
+        lineEdit_aucdtect_path.setText(findauCDtectBin())
         checkBox_recursive = self.findChild(QCheckBox, "checkBox_recursive")
         checkBox_recursive.setChecked(settings.value('Options/RecurseDirectories',True, type=bool))
         checkBox_followsymlinks = self.findChild(QCheckBox, "checkBox_followsymlinks")
@@ -668,30 +737,44 @@ class Options(QDialog):
         pushButton_sox_path.clicked.connect(self.choosePathButton)
         pushButton_ffprobe_path = self.findChild(QPushButton, "pushButton_ffprobe_path")
         pushButton_ffprobe_path.clicked.connect(self.choosePathButton)
+        pushButton_aucdtect_path = self.findChild(QPushButton, "pushButton_aucdtect_path")
+        pushButton_aucdtect_path.clicked.connect(self.choosePathButton)        
+        buttonBox = self.findChild(QDialogButtonBox, "buttonBox")
+        buttonBox.button(QDialogButtonBox.Save).clicked.connect(self.saveSettings)
+        buttonBox.button(QDialogButtonBox.Discard).clicked.connect(self.close)
         
     def choosePathButton(self):
         sender = self.sender()
         if sender.objectName() == "pushButton_mediainfo_path":
             lineEdit = self.findChild(QLineEdit, "lineEdit_mediainfo_path")
+            exe_name = "mediainfo"
         elif sender.objectName() == "pushButton_mp3guessenc_path":
             lineEdit = self.findChild(QLineEdit, "lineEdit_mp3guessenc_path")
+            exe_name = "mp3guessenc"
         elif sender.objectName() == "pushButton_sox_path":
             lineEdit = self.findChild(QLineEdit, "lineEdit_sox_path")
+            exe_name = "sox"
         elif sender.objectName() == "pushButton_ffprobe_path":
             lineEdit = self.findChild(QLineEdit, "lineEdit_ffprobe_path")
+            exe_name = "ffprobe"
+        elif sender.objectName() == "pushButton_aucdtect_path":
+            lineEdit = self.findChild(QLineEdit, "lineEdit_aucdtect_path")
+            exe_name = "aucdtect"
         if lineEdit is not None:
             path = lineEdit.text()
-            file = str(QFileDialog.getOpenFileName(parent=self,caption="Browse to executable file",directory=path)[0])
+            file = str(QFileDialog.getOpenFileName(parent=self,caption="Browse to {} executable file".format(exe_name),directory=path)[0])
             if not file == "":
                 lineEdit.setText(file)
         
-    def accept(self):
+    def saveSettings(self):
         lineEdit_filemaskregex = self.findChild(QLineEdit, "lineEdit_filemaskregex")
         settings.setValue('Options/FilemaskRegEx',lineEdit_filemaskregex.text())
         lineEdit_mediainfo_path = self.findChild(QLineEdit, "lineEdit_mediainfo_path")
         settings.setValue('Paths/mediainfo_bin',lineEdit_mediainfo_path.text())
         lineEdit_mp3guessenc_path = self.findChild(QLineEdit, "lineEdit_mp3guessenc_path")
         settings.setValue('Paths/mp3guessenc_bin',lineEdit_mp3guessenc_path.text())
+        lineEdit_aucdtect_path = self.findChild(QLineEdit, "lineEdit_aucdtect_path")
+        settings.setValue('Paths/aucdtect_bin',lineEdit_aucdtect_path.text())
         lineEdit_sox_path = self.findChild(QLineEdit, "lineEdit_sox_path")
         settings.setValue('Paths/sox_bin',lineEdit_sox_path.text())
         lineEdit_ffprobe_path = self.findChild(QLineEdit, "lineEdit_ffprobe_path")
@@ -722,7 +805,7 @@ class Options(QDialog):
         settings.setValue('Options/auCDtect_scan',checkBox_aucdtect_scan.isChecked())
         horizontalSlider_aucdtect_mode = self.findChild(QSlider, "horizontalSlider_aucdtect_mode")
         settings.setValue('Options/auCDtect_mode',horizontalSlider_aucdtect_mode.value())
-        QDialog.accept(self)
+        self.close()
         
 class Main(QMainWindow):
     def __init__(self):
@@ -770,6 +853,11 @@ class Main(QMainWindow):
         if tableHeaderState is not None:
             self.ui.tableWidget.horizontalHeader().restoreState(tableHeaderState)
             self.ui.tableWidget.sortByColumn(-1,Qt.AscendingOrder)
+            
+        updateMainGuiTimer = QTimer(self) # this timer watches main_q and updates tablewidget with scanner results
+        updateMainGuiTimer.timeout.connect(self.updateMainGui)
+        updateMainGuiTimer.setInterval(100)
+        updateMainGuiTimer.start()
     
     def edit_Options(self):
         dialog = Options()
@@ -811,7 +899,7 @@ class Main(QMainWindow):
         
         event.accept()        
     
-    def contextRescanFile(self, row,selected_items):
+    def contextRescanFile(self,row,selected_items):
         file_list = []
         for filenameItem in selected_items:
             filenameItem.setData(dataScanned, False)
@@ -921,7 +1009,7 @@ class Main(QMainWindow):
                             if quality_colour is not None:
                                 qualityItem.setBackground(quality_colour)
                             if cached_output is not None:
-                                scanner_output = zlib.decompress(cached_output)
+                                scanner_output = decompress(cached_output)
                                 codecItem.setData(dataRawOutput,scanner_output.decode('utf-8'))
 
                             filenameItem.setData(dataScanned, True) # previously scanned
@@ -935,11 +1023,12 @@ class Main(QMainWindow):
                     self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Quality"), qualityItem)
                     self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Frequency"), frequencyItem)
                     self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Mode"), modeItem)
-                                                      
-                    self.statusBar().showMessage("Scanning for files: {} found".format(i))
+
+                    if i % 10 == 0: # update count every 10 files
+                        self.statusBar().showMessage("Scanning for files: {} found".format(i))
                     
                     i += 1
-                    QApplication.processEvents()
+                QApplication.processEvents()
 
         self.ui.tableWidget.setUpdatesEnabled(True)
         self.ui.tableWidget.setSortingEnabled(True)
@@ -953,12 +1042,16 @@ class Main(QMainWindow):
         self.ui.actionFolder_Select.setEnabled(True)
                     
     def cancel_Tasks(self):
+        global task_count
         if task_count > 0: # tasks are running
-            global stop_tasks
-            stop_tasks = True
-        
-    def update_Table(self,row,song_info,scanner_output,usecache=True):
+            scanner_threadpool.clear()
+            qm.lock()
+            task_count = scanner_threadpool.activeThreadCount()
+            qm.unlock()
+ 
+    def update_Table(self,row,song_info,scanner_output):
         # update table with info from scanner
+            usecache = settings.value('Options/UseCache',True, type=bool)
             error_status = song_info['error']
             if not error_status:
                 filenameItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Filename"))
@@ -1044,7 +1137,7 @@ class Main(QMainWindow):
                         except KeyError:
                             filecache.remove('{}/FrameHist'.format(filemd5))
                         if settings.value('Options/CacheRawOutput',False, type=bool) == True:
-                            filecache.setValue('{}/RawOutput'.format(filemd5),zlib.compress(scanner_output.encode('utf-8')))
+                            filecache.setValue('{}/RawOutput'.format(filemd5),compress(scanner_output.encode('utf-8')))
 
             else: # error status
                 codecItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Encoder"))
@@ -1053,6 +1146,32 @@ class Main(QMainWindow):
             
             QApplication.processEvents()
     
+    def updateMainGui(self):
+    # runs from timer
+    # takes results from main_q and adds to tablewidget
+
+        while not main_q.empty():
+        # scanner processes add results to main_q when finished
+            try:
+                q_info = main_q.get(False)
+            except Empty:
+                q_info = None
+                
+            if q_info is not None:
+                row = q_info[0]
+                song_info = q_info[1]
+                scanner_output = q_info[2]
+                self.update_Table(row,song_info,scanner_output)
+    
+    def doScanFile(self,thread):
+        scanner_threadpool.start(thread)
+        qm.lock()
+        global task_count
+        global task_total
+        task_count += 1
+        task_total += 1
+        qm.unlock()
+                        
     def scan_Files(self,checked,filelist=None):
     # loop through table and queue scanner processes for all files
     # filelist - optional list of files to scan, all others will be skipped
@@ -1084,7 +1203,9 @@ class Main(QMainWindow):
             flac_bin = ""
 
         global task_count
+        qm.lock()
         task_count = 0 # tasks remaining
+        qm.unlock()
         global task_total
         task_total = 0 # total tasks - used to calculate percentage remaining
         
@@ -1109,73 +1230,52 @@ class Main(QMainWindow):
                     # use mp3guessenc if available
                     if not mp3guessencbin == "":
                         thread = scanner_Thread(i,filenameStr,mp3guessencbin,"mp3guessenc","-e",debug_enabled)
-                        scanner_threadpool.start(thread)
-                        task_count += 1
-                        task_total += 1
+                        self.doScanFile(thread)
                     elif not mediainfo_bin == "": # fall back to mediainfo
                         thread = scanner_Thread(i,filenameStr,mediainfo_bin,"mediainfo","-",debug_enabled)
-                        scanner_threadpool.start(thread)
-                        task_count += 1
-                        task_total += 1
+                        self.doScanFile(thread)
                         
                 elif fnmatch.fnmatch(filenameStr, "*.flac") and not mediainfo_bin == "":
                     thread = scanner_Thread(i,filenameStr,mediainfo_bin,"mediainfo","-",debug_enabled)
-                    scanner_threadpool.start(thread)
-                    task_count += 1
-                    task_total += 1
-                elif not mediainfo_bin == "":
+                    self.doScanFile(thread)
+                elif not mediainfo_bin == "": # default for all files is mediainfo
                     thread = scanner_Thread(i,filenameStr,mediainfo_bin,"mediainfo","-",debug_enabled)
-                    scanner_threadpool.start(thread)
-                    task_count += 1
-                    task_total += 1
+                    self.doScanFile(thread)
+                    
+                # if lossless audio also run aucdtect if enabled and available
 
                 if fnmatch.fnmatch(filenameStr, "*.flac"):
                     if settings.value('Options/auCDtect_scan',False, type=bool):
                         if not aucdtect_bin == "":
                             aucdtect_mode = settings.value('Options/auCDtect_mode',10, type=int)
                             thread = aucdtect_Thread(i,filenameStr,flac_bin,"-df",aucdtect_bin,"-m{}".format(aucdtect_mode),debug_enabled)
-                            scanner_threadpool.start(thread)
-                            task_count += 1
-                            task_total += 1
-                    
+                            self.doScanFile(thread)
+                elif fnmatch.fnmatch(filenameStr, "*.wav"):
+                    if settings.value('Options/auCDtect_scan',False, type=bool):
+                        if not aucdtect_bin == "":
+                            aucdtect_mode = settings.value('Options/auCDtect_mode',10, type=int)
+                            thread = aucdtect_Thread(i,filenameStr,"","",aucdtect_bin,"-m{}".format(aucdtect_mode),debug_enabled)
+                            self.doScanFile(thread)
+                                        
             QApplication.processEvents()
             
         self.statusBar().showMessage('Scanning files...')
-        usecache = settings.value('Options/UseCache',True, type=bool)
-        
-        global stop_tasks
-        while (task_count > 0) and (not stop_tasks):
+                        
+        # wait here
+        while (scanner_threadpool.activeThreadCount() > 0):
             tasks_done = task_total - task_count
             self.ui.progressBar.setValue(round((tasks_done/task_total)*100))
             QApplication.processEvents()
             sleep(0.025)
-
-            if not main_q.empty():
-            # scanner processes add results to main_q when finished
-                q_info = main_q.get(False,5)
-                row = q_info[0]
-                song_info = q_info[1]
-                scanner_output = q_info[2]
-                self.update_Table(row,song_info,scanner_output,usecache)
-                        
+            
         if debug_enabled:
             debug_log("all threads finished, task count={}".format(task_count))
-
-        if stop_tasks:
-            scanner_threadpool.clear()
-            stop_tasks = False
-        
-        while not main_q.empty():
-        # keep going until results queue is empty
-            q_info = main_q.get(False,5)
-            row = q_info[0]
-            song_info = q_info[1]
-            scanner_output = q_info[2]
-            self.update_Table(row,song_info,scanner_output,usecache)
                            
         self.ui.progressBar.setValue(100)
         self.statusBar().showMessage('Done')
+        qm.lock()
         task_count = 0
+        qm.unlock()
         self.ui.actionScan_Files.setEnabled(True)
         self.ui.actionClear_Filelist.setEnabled(True)
         self.ui.actionFolder_Select.setEnabled(True)
