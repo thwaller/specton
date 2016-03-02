@@ -45,7 +45,7 @@ class Bitrate_Chart(FigureCanvas):
          self.axes.bar(x,y,width=20,align='center')
          self.axes.set_ylabel('Number of frames')
          self.axes.set_xlabel('Bitrate (Kbps)')
-         self.axes.set_xticks([32,64,96,128,160,192,224,256,288,320,352,384])
+         self.axes.set_xticks([32,64,96,128,160,192,224,256,288,320])
 
 class BitGraph(FigureCanvas):
     def __init__(self, parent=None, width=5, height=4, dpi=100, x=[], y=[]):
