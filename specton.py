@@ -5,7 +5,7 @@
 #    Copyright (C) 2016 D. Bird <somesortoferror@gmail.com>
 #    https://github.com/somesortoferror/specton
 
-version = 0.155
+version = 0.156
 
 #    This program is free software: you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -88,6 +88,7 @@ if __name__ == '__main__':
     TableHeaders = ["Folder","Filename","Length","Bitrate","Mode","Frequency","Filesize","Encoder","Quality"]
     ql = QReadWriteLock()
     task_count = 0
+    task_total = 0
     
     settings = QSettings(QSettings.IniFormat,QSettings.UserScope,"Specton","Specton-settings")
     filecache = QSettings(QSettings.IniFormat,QSettings.UserScope,"Specton","Specton-cache")
@@ -134,7 +135,7 @@ def getTempFileName():
     temp_file.close()
     return temp_file_str
 
-def runCmd(cmd):
+def runCmd(cmd,cmd_timeout=300):
 # run command without showing console window on windows
 # return stdout as string
     startupinfo = subprocess.STARTUPINFO()
@@ -142,13 +143,13 @@ def runCmd(cmd):
     proc = subprocess.Popen(cmd,bufsize=-1,startupinfo=startupinfo,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=None,shell=False,universal_newlines=True)
     try:
         output, unused_err = proc.communicate()
-    except TimeoutExpired(timeout=settings.value("Options/Proc_Timeout",300, type=int)):
+    except TimeoutExpired(timeout=cmd_timeout):
         proc.kill()
         debug_log("Process killed due to timeout")
     return output
 
 class scanner_Thread(QRunnable):
-    def __init__(self,row,filenameStr,binary,scanner_name,options,debug_enabled,fileinfo_dialog_update=False):
+    def __init__(self,row,filenameStr,binary,scanner_name,options,debug_enabled,fileinfo_dialog_update=False,cmd_timeout=300):
         super(scanner_Thread, self).__init__()
         self.row = row
         self.filenameStr = filenameStr
@@ -157,12 +158,13 @@ class scanner_Thread(QRunnable):
         self.options = options
         self.debug_enabled = debug_enabled
         self.fileinfo_dialog_update = fileinfo_dialog_update
+        self.cmd_timeout = cmd_timeout
         
     def run(self):
         if self.debug_enabled:
             debug_log("scanner thread running for row {}, file: {}".format(self.row,self.filenameStr))
         try:
-            output_str = runCmd([self.binary,self.options,self.filenameStr])
+            output_str = runCmd([self.binary,self.options,self.filenameStr],self.cmd_timeout)
         except:
             output_str = "Error"
 
@@ -185,15 +187,19 @@ class scanner_Thread(QRunnable):
             if self.debug_enabled:
                 debug_log("scanner thread finished - row {}, result: {}, task count={}".format(self.row,song_info['encoder'],task_count))
     
+            if self.debug_enabled:
+                debug_log("scanner thread posting to queue - row {}".format(self.row))
             main_q.put((self.row,song_info,output_str))
         else:
+            if self.debug_enabled:
+                debug_log("scanner thread posting to queue with error - row {}".format(self.row))
             main_q.put((self.row,{'error':True},output_str))
             if self.debug_enabled:
                 debug_log("scanner thread finished with error - row {}, result: {}, task count={}".format(self.row,output_str,task_count))
                 
 class aucdtect_Thread(QRunnable):
 # run aucdtect on a file and post results to queue
-    def __init__(self,row,filenameStr,decoder_bin,decoder_options,aucdtect_bin,aucdtect_options,debug_enabled):
+    def __init__(self,row,filenameStr,decoder_bin,decoder_options,aucdtect_bin,aucdtect_options,debug_enabled,cmd_timeout):
         super(aucdtect_Thread, self).__init__()
         self.row = row
         self.filenameStr = filenameStr
@@ -202,6 +208,7 @@ class aucdtect_Thread(QRunnable):
         self.aucdtect_bin = aucdtect_bin
         self.aucdtect_options = aucdtect_options
         self.debug_enabled = debug_enabled
+        self.cmd_timeout = cmd_timeout
 
     def run(self):
         if self.debug_enabled:
@@ -209,10 +216,10 @@ class aucdtect_Thread(QRunnable):
         try:
             temp_file = getTempFileName()
             if not self.decoder_bin == "": # need to decode to wav
-                decoder_output = runCmd([self.decoder_bin,self.decoder_options,self.filenameStr,"-o",temp_file])
-                output_str = runCmd([self.aucdtect_bin,self.aucdtect_options,temp_file])
+                decoder_output = runCmd([self.decoder_bin,self.decoder_options,self.filenameStr,"-o",temp_file],self.cmd_timeout)
+                output_str = runCmd([self.aucdtect_bin,self.aucdtect_options,temp_file],self.cmd_timeout)
             else:
-                output_str = runCmd([self.aucdtect_bin,self.aucdtect_options,self.filenameStr])
+                output_str = runCmd([self.aucdtect_bin,self.aucdtect_options,self.filenameStr],self.cmd_timeout)
         except:
             output_str = "Error"
     
@@ -483,15 +490,16 @@ def headerIndexByName(table,headerName):
     
 class makeBitGraphThread(QRunnable):
 # generate bitrate graph using ffprobe/avprobe
-    def __init__(self,fn,grid,ffprobe_bin):
+    def __init__(self,fn,grid,ffprobe_bin,cmd_timeout):
         super(makeBitGraphThread, self).__init__()
         self.fn = fn
         self.grid = grid
         self.ffprobe_bin = ffprobe_bin
+        self.cmd_timeout = cmd_timeout
 
     def run(self):
         try:
-            output_str = runCmd([self.ffprobe_bin,"-show_packets","-of","json",self.fn])
+            output_str = runCmd([self.ffprobe_bin,"-show_packets","-of","json",self.fn],self.cmd_timeout)
         except Exception as e:
             if debug_enabled:
                 debug_log(e)
@@ -597,7 +605,7 @@ class FileInfo(QDialog):
         if (mediainfo_bin == "") or (not os.path.exists(mediainfo_bin)):
             mediainfo_bin = ""
         
-        thread = getScannerThread(grid.objectName(),filenameStr,mp3guessenc_bin,mediainfo_bin,True)
+        thread = getScannerThread(grid.objectName(),filenameStr,mp3guessenc_bin,mediainfo_bin,True,settings.value("Options/Proc_Timeout",300, type=int))
         if thread is not None:
             infodlg_threadpool.start(thread)
                 
@@ -614,7 +622,7 @@ class FileInfo(QDialog):
             if debug_enabled:
                 debug_log("Running sox to create spectrogram for file {}".format(filenameStr))
 
-            thread = makeSpectrogramThread(filenameStr,sox_bin,temp_file,palette,grid.objectName())
+            thread = makeSpectrogramThread(filenameStr,sox_bin,temp_file,palette,grid.objectName(),settings.value("Options/Proc_Timeout",300, type=int))
             infodlg_threadpool.start(thread)
             
         if settings.value('Options/EnableBitGraph',True, type=bool):
@@ -624,7 +632,7 @@ class FileInfo(QDialog):
             tabWidget.addTab(tab,"Bitrate Graph")
             if debug_enabled:
                 debug_log("Running ffprobe to create bitrate graph for file {}".format(filenameStr))
-            thread = makeBitGraphThread(filenameStr,grid.objectName(),findffprobeBin())
+            thread = makeBitGraphThread(filenameStr,grid.objectName(),findffprobeBin(),settings.value("Options/Proc_Timeout",300, type=int))
             infodlg_threadpool.start(thread)
                
          
@@ -706,17 +714,18 @@ def findDlg(searchname):
             return obj
 
 class makeSpectrogramThread(QRunnable):
-    def __init__(self,fn,sox_bin,temp_file,palette,grid):
+    def __init__(self,fn,sox_bin,temp_file,palette,grid,cmd_timeout):
         super(makeSpectrogramThread, self).__init__()
         self.fn = fn
         self.sox_bin = sox_bin
         self.temp_file = temp_file
         self.palette = palette
         self.grid = grid
+        self.cmd_timeout = cmd_timeout
 
     def run(self):
         try:
-            sox_output = runCmd([self.sox_bin,self.fn,"-n","spectrogram","-p{}".format(self.palette),"-o",self.temp_file])
+            sox_output = runCmd([self.sox_bin,self.fn,"-n","spectrogram","-p{}".format(self.palette),"-o",self.temp_file],self.cmd_timeout)
         except Exception as e:
             debug_log(e)
             self.temp_file = ""
@@ -725,6 +734,23 @@ class makeSpectrogramThread(QRunnable):
                 infodlg_q.put(("Spectrogram",self.temp_file,self.grid,self.fn)) # Timer watches this queue and updates gui
             except Exception as e:
                 debug_log(e)
+                
+class notifyEnd(QRunnable):
+    def __init__(self):
+        super(notifyEnd, self).__init__()
+
+    def run(self):
+        while True:
+            with QReadLocker(ql):
+                global task_count
+                if task_count == 0:
+                    break
+                else:
+                    sleep(1)
+        
+        main_q.put((-2,{},""))
+        if debug_enabled:
+            debug_log("notifyEnd")
             
                 
 class Options(QDialog):
@@ -853,19 +879,19 @@ class Options(QDialog):
         settings.setValue('Options/auCDtect_mode',horizontalSlider_aucdtect_mode.value())
         self.close()
         
-def getScannerThread(i,filenameStr,mp3guessenc_bin,mediainfo_bin,fileinfo_dialog_update=False):
+def getScannerThread(i,filenameStr,mp3guessenc_bin,mediainfo_bin,fileinfo_dialog_update=False,cmd_timeout=300):
     thread = None    
     if fnmatch.fnmatch(filenameStr, "*.mp3"):
         # use mp3guessenc if available
         if not mp3guessenc_bin == "":
-            thread = scanner_Thread(i,filenameStr,mp3guessenc_bin,"mp3guessenc","-e",debug_enabled,fileinfo_dialog_update)
+            thread = scanner_Thread(i,filenameStr,mp3guessenc_bin,"mp3guessenc","-e",debug_enabled,fileinfo_dialog_update,cmd_timeout)
         elif not mediainfo_bin == "": # fall back to mediainfo
-            thread = scanner_Thread(i,filenameStr,mediainfo_bin,"mediainfo","-",debug_enabled,fileinfo_dialog_update)
+            thread = scanner_Thread(i,filenameStr,mediainfo_bin,"mediainfo","-",debug_enabled,fileinfo_dialog_update,cmd_timeout)
                         
     elif fnmatch.fnmatch(filenameStr, "*.flac") and not mediainfo_bin == "":
-        thread = scanner_Thread(i,filenameStr,mediainfo_bin,"mediainfo","-",debug_enabled,fileinfo_dialog_update)
+        thread = scanner_Thread(i,filenameStr,mediainfo_bin,"mediainfo","-",debug_enabled,fileinfo_dialog_update,cmd_timeout)
     elif not mediainfo_bin == "": # default for all files is mediainfo
-        thread = scanner_Thread(i,filenameStr,mediainfo_bin,"mediainfo","-",debug_enabled,fileinfo_dialog_update)
+        thread = scanner_Thread(i,filenameStr,mediainfo_bin,"mediainfo","-",debug_enabled,fileinfo_dialog_update,cmd_timeout)
     return thread
         
 class Main(QMainWindow):
@@ -917,7 +943,7 @@ class Main(QMainWindow):
             
         updateMainGuiTimer = QTimer(self) # this timer watches main_q and updates tablewidget with scanner results
         updateMainGuiTimer.timeout.connect(self.updateMainGui)
-        updateMainGuiTimer.setInterval(100)
+        updateMainGuiTimer.setInterval(500)
         updateMainGuiTimer.start()
     
     def edit_Options(self):
@@ -1104,8 +1130,10 @@ class Main(QMainWindow):
             if task_count > 0: # tasks are running
                 scanner_threadpool.clear()
                 task_count = scanner_threadpool.activeThreadCount()
+                thread = notifyEnd()
+                scanner_threadpool.start(thread)
  
-    def update_Table(self,row,song_info,scanner_output):
+    def update_Table(self,row,song_info):
         # update table with info from scanner
             usecache = settings.value('Options/UseCache',True, type=bool)
             error_status = song_info['error']
@@ -1195,16 +1223,21 @@ class Main(QMainWindow):
             else: # error status
                 codecItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Encoder"))
                 codecItem.setText("error scanning file")
-            
-            QApplication.processEvents()
-    
+                
     def updateMainGui(self):
     # runs from timer
     # takes results from main_q and adds to tablewidget
 
         while not main_q.empty():
-#            if debug_enabled:
-#                debug_log("updateMainGui: main_q not empty")
+            if debug_enabled:
+                debug_log("updateMainGui: main_q not empty")
+            with QReadLocker(ql):
+                global task_total,task_count
+                tasks_done = task_total - task_count
+            try:
+                self.ui.progressBar.setValue(round((tasks_done/task_total)*100))
+            except ZeroDivisionError:
+                self.ui.progressBar.setValue(0)
         # scanner processes add results to main_q when finished
             try:
                 q_info = main_q.get(False)
@@ -1213,12 +1246,40 @@ class Main(QMainWindow):
                 q_info = None
                 
             if q_info is not None:
-                row = q_info[0]
-                song_info = q_info[1]
-                scanner_output = q_info[2]
- #               if debug_enabled:
- #                   debug_log("updateMainGui: calling update_Table for row {}".format(row))
-                self.update_Table(row,song_info,scanner_output)
+                try:
+                    row = q_info[0]
+                except Exception as e:
+                    debug_log("updateMainGui: q_info exception {}".format(e))
+                    row = -1
+                try:
+                    song_info = q_info[1]
+                except Exception as e:
+                    debug_log("updateMainGui: q_info exception {}".format(e))
+                    song_info = {}
+#                try:
+#                    scanner_output = q_info[2]
+#                except Exception as e:
+#                    debug_log("updateMainGui: q_info exception {}".format(e))
+#                    scanner_output = ""
+                    
+                if row == -2:   # posted by notifyEnd thread
+                    if debug_enabled:
+                        debug_log("all threads finished, task count={}".format(task_count))
+                           
+                    self.ui.progressBar.setValue(100)
+                    self.statusBar().showMessage('Done')
+#                    with QWriteLocker(ql):
+#                        task_count = 0
+                    self.ui.actionScan_Files.setEnabled(True)
+                    self.ui.actionClear_Filelist.setEnabled(True)
+                    self.ui.actionFolder_Select.setEnabled(True)
+                    self.ui.tableWidget.setSortingEnabled(True)
+                else:
+                    if debug_enabled:
+                        debug_log("updateMainGui: calling update_Table for row {}".format(row))
+                    self.ui.tableWidget.setUpdatesEnabled(False)
+                    self.update_Table(row,song_info)
+                    self.ui.tableWidget.setUpdatesEnabled(True)
     
     def doScanFile(self,thread):
         scanner_threadpool.start(thread)
@@ -1267,6 +1328,8 @@ class Main(QMainWindow):
             global task_total
         task_total = 0 # total tasks - used to calculate percentage remaining
         
+        cmd_timeout = settings.value("Options/Proc_Timeout",300, type=int)
+        
         for i in range(0,self.ui.tableWidget.rowCount()):
             filenameItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget,"Filename"))
             filenameStr = filenameItem.data(dataFilenameStr) # filename
@@ -1284,7 +1347,7 @@ class Main(QMainWindow):
                 if debug_enabled:
                     debug_log("Queuing process for file {}".format(filenameStr))
                     
-                thread = getScannerThread(i,filenameStr,mp3guessenc_bin,mediainfo_bin)
+                thread = getScannerThread(i,filenameStr,mp3guessenc_bin,mediainfo_bin,False,cmd_timeout)
                 if thread is not None:
                     self.doScanFile(thread)
                     
@@ -1294,39 +1357,21 @@ class Main(QMainWindow):
                     if settings.value('Options/auCDtect_scan',False, type=bool):
                         if not aucdtect_bin == "":
                             aucdtect_mode = settings.value('Options/auCDtect_mode',10, type=int)
-                            thread = aucdtect_Thread(i,filenameStr,flac_bin,"-df",aucdtect_bin,"-m{}".format(aucdtect_mode),debug_enabled)
+                            thread = aucdtect_Thread(i,filenameStr,flac_bin,"-df",aucdtect_bin,"-m{}".format(aucdtect_mode),debug_enabled,cmd_timeout)
                             self.doScanFile(thread)
                 elif fnmatch.fnmatch(filenameStr, "*.wav"):
                     if settings.value('Options/auCDtect_scan',False, type=bool):
                         if not aucdtect_bin == "":
                             aucdtect_mode = settings.value('Options/auCDtect_mode',10, type=int)
-                            thread = aucdtect_Thread(i,filenameStr,"","",aucdtect_bin,"-m{}".format(aucdtect_mode),debug_enabled)
+                            thread = aucdtect_Thread(i,filenameStr,"","",aucdtect_bin,"-m{}".format(aucdtect_mode),debug_enabled,cmd_timeout)
                             self.doScanFile(thread)
                                         
             QApplication.processEvents()
             
         self.statusBar().showMessage('Scanning files...')
-                        
-        # wait here
-        while (scanner_threadpool.activeThreadCount() > 0):
-            with QReadLocker(ql):
-                tasks_done = task_total - task_count
-            self.ui.progressBar.setValue(round((tasks_done/task_total)*100))
-            QApplication.processEvents()
-            sleep(0.016)
-            
-        if debug_enabled:
-            debug_log("all threads finished, task count={}".format(task_count))
-                           
-        self.ui.progressBar.setValue(100)
-        self.statusBar().showMessage('Done')
-        with QWriteLocker(ql):
-            task_count = 0
-        self.ui.actionScan_Files.setEnabled(True)
-        self.ui.actionClear_Filelist.setEnabled(True)
-        self.ui.actionFolder_Select.setEnabled(True)
-        self.ui.tableWidget.setSortingEnabled(True)
-            
+        thread = notifyEnd()
+        scanner_threadpool.start(thread)
+                                                        
     def clear_List(self):
         self.ui.progressBar.setValue(0)
         self.ui.tableWidget.clearContents()
