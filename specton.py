@@ -272,6 +272,7 @@ if __name__ == '__main__':
     aucdtect_regex = re.compile(r"^This track looks like (.*) with probability (\d*)%",re.MULTILINE)
     mp3_bitrate_data_regex = re.compile(r"(\d*?) kbps \: *(\d*?) \(")
     mp3_lame_tag_preset_regex = re.compile(r"^Lame tag.*Preset\s*:\s*(.*?)Orig",re.MULTILINE|re.DOTALL)
+    mp3_xing_quality_regex = re.compile(r"^Xing.*?Quality\s*?:\s*?(\d*?)\s*?\(-q (\d*?) -V (\d*?)\)",re.MULTILINE|re.DOTALL)
 
     
 def doMP3Checks(bitrate,encoder,encoder_string,header_errors,mp3guessenc_output):
@@ -288,19 +289,40 @@ def doMP3Checks(bitrate,encoder,encoder_string,header_errors,mp3guessenc_output)
         bitrate_int = float(bitrate.split()[0])
         if bitrate_int > 300:
             colour = colourQualityGood
-    elif encoder.startswith("Xing (old)"):
+    elif encoder.startswith("Xing (old)") or encoder.startswith("BladeEnc"):
         colour = colourQualityWarning
     elif encoder_string.startswith("LAME"):
         search = mp3_lame_tag_preset_regex.search(mp3guessenc_output)
         if search is not None:
             preset = search.group(1).strip()
-            if ((preset in ["256 kbps","320 kbps","Standard.","Extreme.","Insane."]) or (preset[0:2] in ["V0","V1","V2","V3"])):
+            if (preset[0:2] in ["V0","V1","V2","V3"]):
                 colour = colourQualityGood
                 return preset, colour
+            elif preset in ["256 kbps","320 kbps","Standard.","Extreme.","Insane."]: 
+                colour = colourQualityGood                
+                return "--preset {}".format(preset.lower().strip(".")), colour
             elif ((preset in ["160", "192"]) or (preset[0:2] in ["V4","V5","V6"])):
                 colour = colourQualityOk
                 return preset, colour
-
+                
+        search = mp3_xing_quality_regex.search(mp3guessenc_output)
+        if search is not None:
+            quality = search.group(1)
+            try:
+                q = int(search.group(2))
+            except:
+                q = 999
+            try:
+                V = int(search.group(3))
+            except:
+                V = 999
+            if V <= 3:
+                colour = colourQualityGood
+            elif V <= 6:
+                colour = colourQualityOk
+            if q < 999 and V < 999:
+                text = "-q{} -V{}".format(q,V)
+                
     return text, colour
 
     
