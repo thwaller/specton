@@ -5,7 +5,7 @@
 #    Copyright (C) 2016 D. Bird <somesortoferror@gmail.com>
 #    https://github.com/somesortoferror/specton
 
-version = 0.156
+version = 0.157
 
 #    This program is free software: you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -54,6 +54,8 @@ colourQualityUnknown = QColor(Qt.lightGray)
 colourQualityUnknown.setAlpha(100)
 colourQualityGood = QColor(Qt.green)
 colourQualityGood.setAlpha(100)
+colourQualityOk = QColor(Qt.darkGreen)
+colourQualityOk.setAlpha(100)
 colourQualityWarning = QColor(Qt.yellow)
 colourQualityWarning.setAlpha(100)
 colourQualityBad = QColor(Qt.red)
@@ -238,7 +240,7 @@ class aucdtect_Thread(QRunnable):
             song_info = parse_aucdtect_output(output_str)
 
             if debug_enabled:
-                debug_log("aucdtect thread finished - row {}, result: {}, task count={}".format(self.row,song_info['aucdtect_quality'],task_count))
+                debug_log("aucdtect thread finished - row {}, result: {}, task count={}".format(self.row,song_info['quality'],task_count))
     
             main_q.put((self.row,song_info,output_str))
         else:
@@ -269,16 +271,37 @@ if __name__ == '__main__':
     mediainfo_mode_regex = re.compile(r"^Audio.*Mode\s*: ([a-zA-Z ]*)",re.MULTILINE|re.DOTALL) # stereo/js
     aucdtect_regex = re.compile(r"^This track looks like (.*) with probability (\d*)%",re.MULTILINE)
     mp3_bitrate_data_regex = re.compile(r"(\d*?) kbps \: *(\d*?) \(")
+    mp3_lame_tag_preset_regex = re.compile(r"^Lame tag.*Preset\s*:\s*(.*?)Orig",re.MULTILINE|re.DOTALL)
 
     
 def doMP3Checks(bitrate,encoder,encoder_string,header_errors,mp3guessenc_output):
 # do some MP3 quality checks here
     colour = colourQualityUnknown
+    text = None
     
     if int(header_errors) > 0:
         colour = colourQualityBad
+        text = "Errors"
+        return text, colour
+                
+    if encoder.startswith("FhG"):
+        bitrate_int = float(bitrate.split()[0])
+        if bitrate_int > 300:
+            colour = colourQualityGood
+    elif encoder.startswith("Xing (old)"):
+        colour = colourQualityWarning
+    elif encoder_string.startswith("LAME"):
+        search = mp3_lame_tag_preset_regex.search(mp3guessenc_output)
+        if search is not None:
+            preset = search.group(1).strip()
+            if ((preset in ["256 kbps","320 kbps","Standard.","Extreme.","Insane."]) or (preset[0:2] in ["V0","V1","V2","V3"])):
+                colour = colourQualityGood
+                return preset, colour
+            elif ((preset in ["160", "192"]) or (preset[0:2] in ["V4","V5","V6"])):
+                colour = colourQualityOk
+                return preset, colour
 
-    return colour
+    return text, colour
 
     
 def format_bytes(num, suffix='B'):
@@ -375,11 +398,11 @@ def parse_mp3guessenc_output(mp3guessenc_output):
     elif (mode == "") and (not bitrate_mode == ""):
         format_mode = "{}".format(bitrate_mode)
 
-    quality_colour = doMP3Checks(bitrate,encoder,encoder_string,header_errors,mp3guessenc_output)
+    quality, quality_colour = doMP3Checks(bitrate,encoder,encoder_string,header_errors,mp3guessenc_output)
         
-    return {'encoder':encoder, 'audio_format':'MP3', 'bitrate':bitrate ,'encoder_string':encoder_string, 
+    return {'result_type':'mp3guessenc','encoder':encoder, 'audio_format':'MP3', 'bitrate':bitrate ,'encoder_string':encoder_string, 
             'length':length, 'filesize':filesize, 'error':False, 'frame_hist':frame_hist, 
-            'block_usage':block_usage, 'mode_count':mode_count, 'mode':format_mode,'frequency':frequency,'quality':None,'quality_colour':quality_colour }
+            'block_usage':block_usage, 'mode_count':mode_count, 'mode':format_mode,'frequency':frequency,'quality':quality,'quality_colour':quality_colour }
 
 def parse_mediainfo_output(mediainfo_output):
     encoder=""
@@ -440,7 +463,7 @@ def parse_mediainfo_output(mediainfo_output):
     elif (mode == "") and (not bitrate_mode == ""):
         format_mode = "{}".format(bitrate_mode)
             
-    return {'encoder':encoder, 'audio_format':audio_format, 'bitrate':bitrate ,'encoder_string':encoder_string, 
+    return {'result_type':'mediainfo','encoder':encoder, 'audio_format':audio_format, 'bitrate':bitrate ,'encoder_string':encoder_string, 
             'length':length,'mode':format_mode,'frequency':frequency, 'filesize':filesize, 'error':False, 'quality':None}
 
 def parse_aucdtect_output(aucdtect_output):
@@ -476,7 +499,7 @@ def parse_aucdtect_output(aucdtect_output):
     else:
         aucdtect_quality = detection
     
-    return {'error':False,'aucdtect_quality':aucdtect_quality,'quality_colour':quality_colour}
+    return {'result_type':'aucdtect','error':False,'quality':aucdtect_quality,'quality_colour':quality_colour}
     
 def md5Str(Str):
     return md5(Str.encode('utf-8')).hexdigest()
@@ -1051,7 +1074,13 @@ class Main(QMainWindow):
         # walk through directory chosen by user
         # and add filenames to treeview
         i = 0
+        c = 0
         for root, dirs, files in os.walk(directory, True, None, followsymlinks):
+            c += 1
+            if c % 2 == 0:
+                QApplication.processEvents()
+                if (i > 0) and (i % 10 == 0): # update count every 10 files
+                    self.statusBar().showMessage("Scanning for files: {} found".format(i))
             if not recursedirectories:
                 while len(dirs) > 0:
                     dirs.pop()
@@ -1108,13 +1137,10 @@ class Main(QMainWindow):
                     self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Quality"), qualityItem)
                     self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Frequency"), frequencyItem)
                     self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Mode"), modeItem)
-
-                    if i % 10 == 0: # update count every 10 files
-                        self.statusBar().showMessage("Scanning for files: {} found".format(i))
-                    
                     i += 1
-                QApplication.processEvents()
 
+            
+            
         self.ui.tableWidget.setUpdatesEnabled(True)
         self.ui.tableWidget.setSortingEnabled(True)
         self.ui.tableWidget.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1139,10 +1165,10 @@ class Main(QMainWindow):
         # update table with info from scanner
             usecache = settings.value('Options/UseCache',True, type=bool)
             error_status = song_info['error']
+            result_type = song_info['result_type']
             if not error_status:
                 filenameItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Filename"))
                 filenameStr = filenameItem.data(dataFilenameStr)
-#                usecache = settings.value('Options/UseCache',True, type=bool)
                 if usecache:
                     hashStr = filenameStr + str(os.path.getmtime(filenameStr))
                     filemd5 = md5Str(hashStr)
@@ -1159,17 +1185,16 @@ class Main(QMainWindow):
                         filecache.setValue('{}/QualityColour'.format(filemd5),qualityItem.background())
                 
                 try:
-                    aucdtect_quality = song_info['aucdtect_quality']
+                    quality = song_info['quality']
                 except KeyError:
-                    aucdtect_quality = None
+                    quality = None
 
-                if aucdtect_quality is not None:
-                    # aucdtect
+                if quality is not None:
                     qualityItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Quality"))
-                    qualityItem.setText(aucdtect_quality)
+                    qualityItem.setText(quality)
                     if usecache:
-                        filecache.setValue('{}/Quality'.format(filemd5),aucdtect_quality)
-                else: # not aucdtect
+                        filecache.setValue('{}/Quality'.format(filemd5),quality)
+                if not result_type == "aucdtect":
                     filenameItem.setData(dataScanned, True) # boolean, true if file already scanned
                     codecItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Encoder"))
                     encoder_string = song_info['encoder_string']
@@ -1297,6 +1322,7 @@ class Main(QMainWindow):
         self.ui.actionScan_Files.setEnabled(False)
         self.ui.actionClear_Filelist.setEnabled(False)
         self.ui.actionFolder_Select.setEnabled(False)
+        thread_list = []
         
         global debug_enabled
         debug_enabled = settings.value("Options/Debug", False, type=bool)
@@ -1351,7 +1377,7 @@ class Main(QMainWindow):
                     
                 thread = getScannerThread(i,filenameStr,mp3guessenc_bin,mediainfo_bin,False,cmd_timeout)
                 if thread is not None:
-                    self.doScanFile(thread)
+                    thread_list.append(thread)
                     
                 # if lossless audio also run aucdtect if enabled and available
 
@@ -1360,17 +1386,19 @@ class Main(QMainWindow):
                         if not aucdtect_bin == "":
                             aucdtect_mode = settings.value('Options/auCDtect_mode',10, type=int)
                             thread = aucdtect_Thread(i,filenameStr,flac_bin,"-df",aucdtect_bin,"-m{}".format(aucdtect_mode),debug_enabled,cmd_timeout)
-                            self.doScanFile(thread)
+                            thread_list.append(thread)
                 elif fnmatch.fnmatch(filenameStr, "*.wav"):
                     if settings.value('Options/auCDtect_scan',False, type=bool):
                         if not aucdtect_bin == "":
                             aucdtect_mode = settings.value('Options/auCDtect_mode',10, type=int)
                             thread = aucdtect_Thread(i,filenameStr,"","",aucdtect_bin,"-m{}".format(aucdtect_mode),debug_enabled,cmd_timeout)
-                            self.doScanFile(thread)
+                            thread_list.append(thread)
                                         
             QApplication.processEvents()
             
         self.statusBar().showMessage('Scanning files...')
+        for thread in thread_list:
+            self.doScanFile(thread)
         thread = notifyEnd()
         scanner_threadpool.start(thread)
                                                         
