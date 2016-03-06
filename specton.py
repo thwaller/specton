@@ -5,7 +5,7 @@
 #    Copyright (C) 2016 D. Bird <somesortoferror@gmail.com>
 #    https://github.com/somesortoferror/specton
 
-version = 0.157
+version = 0.158
 
 #    This program is free software: you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -35,7 +35,7 @@ from hashlib import md5
 from io import TextIOWrapper
 from time import sleep
 
-from PyQt5.QtCore import Qt, QSettings, QTimer, QThreadPool, QRunnable, QMutex, QReadLocker, QWriteLocker, QReadWriteLock
+from PyQt5.QtCore import Qt, QSettings, QTimer, QThreadPool, QRunnable, QMutex, QReadLocker, QWriteLocker, QReadWriteLock, QEvent, QObject
 from PyQt5.QtGui import QPixmap, QColor
 from PyQt5.QtWidgets import QWidget, QApplication, QDialog, QDialogButtonBox,QMainWindow, QAction, QFileDialog, QTableWidgetItem, QMessageBox, QMenu, QLineEdit,QCheckBox,QSpinBox,QSlider,QTextEdit,QTabWidget,QLabel,QGridLayout,QPushButton
 from spcharts import Bitrate_Chart, BitGraph, NavigationToolbar
@@ -91,6 +91,7 @@ if __name__ == '__main__':
     ql = QReadWriteLock()
     task_count = 0
     task_total = 0
+    file_hashlist = []
     
     settings = QSettings(QSettings.IniFormat,QSettings.UserScope,"Specton","Specton-settings")
     filecache = QSettings(QSettings.IniFormat,QSettings.UserScope,"Specton","Specton-cache")
@@ -141,15 +142,21 @@ def runCmd(cmd,cmd_timeout=300):
 # run command without showing console window on windows
 # return stdout as string
     startupinfo = None
+    output = ""
     if os.name == 'nt':
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    proc = subprocess.Popen(cmd,bufsize=-1,startupinfo=startupinfo,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=None,shell=False,universal_newlines=True)
     try:
-        output, unused_err = proc.communicate()
-    except TimeoutExpired(timeout=cmd_timeout):
-        proc.kill()
-        debug_log("Process killed due to timeout")
+        proc = subprocess.Popen(cmd,bufsize=-1,startupinfo=startupinfo,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=None,shell=False,universal_newlines=True)
+    except Exception as e:
+        proc = None
+        debug_log("exception in runCmd: {}".format(e))
+    if proc is not None:
+        try:
+            output, unused_err = proc.communicate()
+        except TimeoutExpired(timeout=cmd_timeout):
+            proc.kill()
+            debug_log("runCmd: Process killed due to timeout")
     return output
 
 class scanner_Thread(QRunnable):
@@ -165,13 +172,18 @@ class scanner_Thread(QRunnable):
         self.cmd_timeout = cmd_timeout
         
     def run(self):
+        output_str = ""
         if self.debug_enabled:
             debug_log("scanner thread running for row {}, file: {}".format(self.row,self.filenameStr))
-        try:
-            output_str = runCmd([self.binary,self.options,self.filenameStr],self.cmd_timeout)
-        except:
-            output_str = "Error"
-
+        
+        if os.path.lexists(self.filenameStr): 
+            try:
+                output_str = runCmd([self.binary,self.options,self.filenameStr],self.cmd_timeout)
+            except:
+                output_str = "Error"
+        else:
+            output_str = "Error" # handle the case where file has been deleted while in queue e.g. temp files or user deletion
+        
         with QWriteLocker(ql):
             global task_count
             task_count -= 1
@@ -197,7 +209,7 @@ class scanner_Thread(QRunnable):
         else:
             if self.debug_enabled:
                 debug_log("scanner thread posting to queue with error - row {}".format(self.row))
-            main_q.put((self.row,{'error':True},output_str))
+            main_q.put((self.row,{'result_type':'Scanner_Output','error':True},output_str))
             if self.debug_enabled:
                 debug_log("scanner thread finished with error - row {}, result: {}, task count={}".format(self.row,output_str,task_count))
                 
@@ -215,16 +227,20 @@ class aucdtect_Thread(QRunnable):
         self.cmd_timeout = cmd_timeout
 
     def run(self):
+        temp_file = ""
         if self.debug_enabled:
             debug_log("aucdtect thread started for row {}, file: {}".format(self.row,self.filenameStr))
-        try:
-            temp_file = getTempFileName()
-            if not self.decoder_bin == "": # need to decode to wav
-                decoder_output = runCmd([self.decoder_bin,self.decoder_options,self.filenameStr,"-o",temp_file],self.cmd_timeout)
-                output_str = runCmd([self.aucdtect_bin,self.aucdtect_options,temp_file],self.cmd_timeout)
-            else:
-                output_str = runCmd([self.aucdtect_bin,self.aucdtect_options,self.filenameStr],self.cmd_timeout)
-        except:
+        if os.path.lexists(self.filenameStr): 
+            try:
+                temp_file = getTempFileName()
+                if not self.decoder_bin == "": # need to decode to wav
+                    decoder_output = runCmd([self.decoder_bin,self.decoder_options,self.filenameStr,"-o",temp_file],self.cmd_timeout)
+                    output_str = runCmd([self.aucdtect_bin,self.aucdtect_options,temp_file],self.cmd_timeout)
+                else:
+                    output_str = runCmd([self.aucdtect_bin,self.aucdtect_options,self.filenameStr],self.cmd_timeout)
+            except:
+                output_str = "Error"
+        else:
             output_str = "Error"
     
         try:
@@ -244,7 +260,7 @@ class aucdtect_Thread(QRunnable):
     
             main_q.put((self.row,song_info,output_str))
         else:
-            main_q.put((self.row,{'error':True},output_str))
+            main_q.put((self.row,{'result_type':'Scanner_Output','error':True},output_str))
             if debug_enabled:
                 debug_log("aucdtect thread finished with error - row {}, result: {}, task count={}".format(self.row,output_str,task_count))
 
@@ -289,7 +305,7 @@ def doMP3Checks(bitrate,encoder,encoder_string,header_errors,mp3guessenc_output)
         bitrate_int = float(bitrate.split()[0])
         if bitrate_int > 300:
             colour = colourQualityGood
-    elif encoder.startswith("Xing (old)") or encoder.startswith("BladeEnc"):
+    elif encoder.startswith("Xing (old)") or encoder.startswith("BladeEnc") or encoder.startswith("dist10"):
         colour = colourQualityWarning
     elif encoder_string.startswith("LAME"):
         search = mp3_lame_tag_preset_regex.search(mp3guessenc_output)
@@ -307,7 +323,10 @@ def doMP3Checks(bitrate,encoder,encoder_string,header_errors,mp3guessenc_output)
                 
         search = mp3_xing_quality_regex.search(mp3guessenc_output)
         if search is not None:
-            quality = search.group(1)
+            try:
+                quality = int(search.group(1))
+            except:
+                quality = 0
             try:
                 q = int(search.group(2))
             except:
@@ -316,10 +335,16 @@ def doMP3Checks(bitrate,encoder,encoder_string,header_errors,mp3guessenc_output)
                 V = int(search.group(3))
             except:
                 V = 999
-            if V <= 3:
+            if quality <= 50:
+                colour = colourQualityWarning
+            elif V <= 3:
                 colour = colourQualityGood
             elif V <= 6:
                 colour = colourQualityOk
+            elif V < 999:
+                colour = colourQualityWarning
+            if q >= 7 and q < 999:
+                colour = colourQualityWarning
             if q < 999 and V < 999:
                 text = "-q{} -V{}".format(q,V)
                 
@@ -545,18 +570,22 @@ class makeBitGraphThread(QRunnable):
         self.cmd_timeout = cmd_timeout
 
     def run(self):
+        output_str = ""
         try:
             output_str = runCmd([self.ffprobe_bin,"-show_packets","-of","json",self.fn],self.cmd_timeout)
         except Exception as e:
-            if debug_enabled:
-                debug_log(e)
-                return None
+            debug_log(e)
+            return None
     
         x_list = []
         y_list = []
     
-        json_packet_data = json.loads(output_str)
-        packets = json_packet_data["packets"]
+        try:
+            json_packet_data = json.loads(output_str)
+            packets = json_packet_data["packets"]
+        except Exception as e:
+            debug_log(e)
+            return None
     
         for dict in packets:
             if not dict["codec_type"] == "audio":
@@ -951,7 +980,7 @@ class Main(QMainWindow):
 
         self.ui.actionExit.triggered.connect(sys.exit)
         self.ui.actionScan_Files.triggered.connect(self.scan_Files)
-        self.ui.actionFolder_Select.triggered.connect(self.select_Folder)
+        self.ui.actionFolder_Select.triggered.connect(partial(self.select_Folder,"",None))
         self.ui.actionClear_Filelist.triggered.connect(self.clear_List)
         self.ui.actionStop.triggered.connect(self.cancel_Tasks)
         self.ui.actionOptions.triggered.connect(self.edit_Options)
@@ -969,6 +998,7 @@ class Main(QMainWindow):
         self.ui.tableWidget.setHorizontalHeaderLabels(TableHeaders)
         self.ui.tableWidget.horizontalHeader().resizeSection(headerIndexByName(self.ui.tableWidget,"Filename"),300)
         self.ui.tableWidget.horizontalHeader().setSectionsMovable(True)
+        self.ui.tableWidget.installEventFilter(self)
         
         self.ui.tableWidget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.ui.tableWidget.customContextMenuRequested.connect(self.tableContextMenu)
@@ -992,7 +1022,29 @@ class Main(QMainWindow):
         updateMainGuiTimer.timeout.connect(self.updateMainGui)
         updateMainGuiTimer.setInterval(500)
         updateMainGuiTimer.start()
-    
+        
+    def eventFilter(self, object, event):
+        if object is self.ui.tableWidget:
+            # handle file/folder drag & drop
+            if (event.type() == QEvent.DragEnter):
+                if event.mimeData().hasUrls():
+                    event.accept()
+                else:
+                    event.ignore()
+                return True
+            if (event.type() == QEvent.Drop):
+                if event.mimeData().hasUrls():
+                    links = []
+                    for url in event.mimeData().urls():
+                        links.append(str(url.toLocalFile()))
+                    for link in links:
+                        self.select_Folder(directory=link,clearfilelist=False)
+                    event.accept()
+                else:
+                    event.ignore()
+                return True
+            return False
+                    
     def edit_Options(self):
         dialog = Options()
         result = dialog.exec_()
@@ -1066,8 +1118,72 @@ class Main(QMainWindow):
         if os.name == 'nt':
             subprocess.Popen("explorer \"" + os.path.normpath(folderName) + "\"")
     
-    def select_Folder(self):
-        directory = str(QFileDialog.getExistingDirectory(self, "Select Directory to Scan", os.path.expanduser("~")))
+    def addTableWidgetItem(self,row,name,dir,usecache):
+        filenameStr = os.path.join(dir, name)
+        hashStr = filenameStr + str(os.path.getmtime(filenameStr)) # use mtime so hash changes if file changed
+        filemd5 = md5Str(hashStr)
+        
+        try: # don't add same file twice
+            index = file_hashlist.index(filemd5)
+        except:
+            index = -1 # not found in list
+        
+        if index > -1:
+            return # file already added
+        else:
+            file_hashlist.append(filemd5)
+
+        filenameItem = QTableWidgetItem(name)
+        filenameItem.setToolTip(filenameStr)
+        filenameItem.setData(dataFilenameStr, filenameStr)
+        codecItem = QTableWidgetItem("Not scanned")
+        folderItem = QTableWidgetItem(os.path.basename(dir))
+        folderItem.setToolTip(dir)
+        bitrateItem = QTableWidgetItem("")
+        lengthItem = QTableWidgetItem("")
+        filesizeItem = QTableWidgetItem("")
+        qualityItem = QTableWidgetItem("")
+        frequencyItem = QTableWidgetItem("")
+        modeItem = QTableWidgetItem("")
+                        
+        if usecache:
+            if filecache.value('{}/Encoder'.format(filemd5)) is not None:
+                codecItem.setText(filecache.value('{}/Encoder'.format(filemd5)))
+                bitrateItem.setText(filecache.value('{}/Bitrate'.format(filemd5)))
+                lengthItem.setText(filecache.value('{}/Length'.format(filemd5)))
+                filesizeItem.setText(filecache.value('{}/Filesize'.format(filemd5)))
+                frame_hist = filecache.value('{}/FrameHist'.format(filemd5))
+                if frame_hist is not None:
+                    bitrateItem.setData(dataBitrate,frame_hist)
+                quality = filecache.value('{}/Quality'.format(filemd5))
+                if quality is not None:
+                    qualityItem.setText(quality)
+                frequency = filecache.value('{}/Frequency'.format(filemd5))
+                if frequency is not None:
+                    frequencyItem.setText(frequency)
+                mode = filecache.value('{}/Mode'.format(filemd5))
+                if mode is not None:
+                    modeItem.setText(mode)
+                quality_colour = filecache.value('{}/QualityColour'.format(filemd5))
+                if quality_colour is not None:
+                    qualityItem.setBackground(quality_colour)
+
+                filenameItem.setData(dataScanned, True) # previously scanned
+        
+        self.ui.tableWidget.insertRow(row)
+        self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Filename"), filenameItem)
+        self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Folder"), folderItem)
+        self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Encoder"), codecItem)
+        self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Bitrate"), bitrateItem)
+        self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Length"), lengthItem)
+        self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Filesize"), filesizeItem)
+        self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Quality"), qualityItem)
+        self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Frequency"), frequencyItem)
+        self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Mode"), modeItem)    
+    
+    def select_Folder(self,directory,clearfilelist):
+        if directory == "":
+            directory = str(QFileDialog.getExistingDirectory(self, "Select Directory to Scan", os.path.expanduser("~")))
         filemask = settings.value('Options/FilemaskRegEx',defaultfilemask)
         
         try:
@@ -1078,7 +1194,8 @@ class Main(QMainWindow):
             
         followsymlinks = settings.value('Options/FollowSymlinks',False, type=bool)
         recursedirectories = settings.value('Options/RecurseDirectories',True, type=bool)
-        clearfilelist = settings.value('Options/ClearFilelist',True, type=bool)
+        if clearfilelist is None:
+            clearfilelist = settings.value('Options/ClearFilelist',True, type=bool)
         usecache = settings.value('Options/UseCache',True, type=bool)
         
         if clearfilelist:
@@ -1108,61 +1225,9 @@ class Main(QMainWindow):
                     dirs.pop()
             for name in files:
                 if filemask_regex.search(name) is not None:
-#                    i = self.ui.tableWidget.rowCount()
-                    self.ui.tableWidget.insertRow(i)
-                    filenameItem = QTableWidgetItem(name)
-                    filenameStr = os.path.join(root, name)
-                    filenameItem.setToolTip(filenameStr)
-                    filenameItem.setData(dataFilenameStr, filenameStr)
-                    codecItem = QTableWidgetItem("Not scanned")
-                    folderItem = QTableWidgetItem(os.path.basename(root))
-                    folderItem.setToolTip(root)
-                    bitrateItem = QTableWidgetItem("")
-                    lengthItem = QTableWidgetItem("")
-                    filesizeItem = QTableWidgetItem("")
-                    qualityItem = QTableWidgetItem("")
-                    frequencyItem = QTableWidgetItem("")
-                    modeItem = QTableWidgetItem("")
-                    
-                    if usecache:
-                        hashStr = filenameStr + str(os.path.getmtime(filenameStr))
-                        filemd5 = md5Str(hashStr)
-                        if filecache.value('{}/Encoder'.format(filemd5)) is not None:
-                            codecItem.setText(filecache.value('{}/Encoder'.format(filemd5)))
-                            bitrateItem.setText(filecache.value('{}/Bitrate'.format(filemd5)))
-                            lengthItem.setText(filecache.value('{}/Length'.format(filemd5)))
-                            filesizeItem.setText(filecache.value('{}/Filesize'.format(filemd5)))
-                            frame_hist = filecache.value('{}/FrameHist'.format(filemd5))
-                            if frame_hist is not None:
-                                bitrateItem.setData(dataBitrate,frame_hist)
-                            quality = filecache.value('{}/Quality'.format(filemd5))
-                            if quality is not None:
-                                qualityItem.setText(quality)
-                            frequency = filecache.value('{}/Frequency'.format(filemd5))
-                            if frequency is not None:
-                                frequencyItem.setText(frequency)
-                            mode = filecache.value('{}/Mode'.format(filemd5))
-                            if mode is not None:
-                                modeItem.setText(mode)
-                            quality_colour = filecache.value('{}/QualityColour'.format(filemd5))
-                            if quality_colour is not None:
-                                qualityItem.setBackground(quality_colour)
-
-                            filenameItem.setData(dataScanned, True) # previously scanned
-                    
-                    self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Filename"), filenameItem)
-                    self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Folder"), folderItem)
-                    self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Encoder"), codecItem)
-                    self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Bitrate"), bitrateItem)
-                    self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Length"), lengthItem)
-                    self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Filesize"), filesizeItem)
-                    self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Quality"), qualityItem)
-                    self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Frequency"), frequencyItem)
-                    self.ui.tableWidget.setItem(i, headerIndexByName(self.ui.tableWidget,"Mode"), modeItem)
+                    self.addTableWidgetItem(i,name,root,usecache)
                     i += 1
 
-            
-            
         self.ui.tableWidget.setUpdatesEnabled(True)
         self.ui.tableWidget.setSortingEnabled(True)
         self.ui.tableWidget.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1423,11 +1488,12 @@ class Main(QMainWindow):
             self.doScanFile(thread)
         thread = notifyEnd()
         scanner_threadpool.start(thread)
-                                                        
+        
     def clear_List(self):
         self.ui.progressBar.setValue(0)
         self.ui.tableWidget.clearContents()
         self.ui.tableWidget.setRowCount(0)
+        file_hashlist.clear()
 
     def about_Dlg(self):
         QMessageBox.about(self, "About",
