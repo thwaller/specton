@@ -33,7 +33,7 @@ import tempfile
 from functools import partial
 from hashlib import md5
 from io import TextIOWrapper
-from time import sleep
+from time import sleep, ctime, asctime
 
 from PyQt5.QtCore import Qt, QSettings, QTimer, QThreadPool, QRunnable, QMutex, QReadLocker, QWriteLocker, QReadWriteLock, QEvent, QObject
 from PyQt5.QtGui import QPixmap, QColor
@@ -289,7 +289,7 @@ if __name__ == '__main__':
     mp3_bitrate_data_regex = re.compile(r"(\d*?) kbps \: *(\d*?) \(")
     mp3_lame_tag_preset_regex = re.compile(r"^Lame tag.*Preset\s*:\s*(.*?)Orig",re.MULTILINE|re.DOTALL)
     mp3_xing_quality_regex = re.compile(r"^Xing.*?Quality\s*?:\s*?(\d*?)\s*?\(-q (\d*?) -V (\d*?)\)",re.MULTILINE|re.DOTALL)
-
+    mp3_duration_format_regex = re.compile(r"(\d*?):(\d*?):(\d*\.\d*)")
     
 def doMP3Checks(bitrate,encoder,encoder_string,header_errors,mp3guessenc_output):
 # do some MP3 quality checks here
@@ -445,10 +445,23 @@ def parse_mp3guessenc_output(mp3guessenc_output):
     elif (mode == "") and (not bitrate_mode == ""):
         format_mode = "{}".format(bitrate_mode)
 
+    def formatMP3GuessEncDate(length):
+#        0:03:40.369 -> 3m 40s
+        search = mp3_duration_format_regex.search(length)
+        if search is not None:
+            hours = int(search.group(1))
+            minutes = int(search.group(2))
+            seconds = float(search.group(3))
+            return "{}m {}s".format((hours*60)+minutes,round(seconds))
+        else:
+            return length
+                
+    duration = formatMP3GuessEncDate(length)
+
     quality, quality_colour = doMP3Checks(bitrate,encoder,encoder_string,header_errors,mp3guessenc_output)
         
     return {'result_type':'mp3guessenc','encoder':encoder, 'audio_format':'MP3', 'bitrate':bitrate ,'encoder_string':encoder_string, 
-            'length':length, 'filesize':filesize, 'error':False, 'frame_hist':frame_hist, 
+            'length':duration, 'filesize':filesize, 'error':False, 'frame_hist':frame_hist, 
             'block_usage':block_usage, 'mode_count':mode_count, 'mode':format_mode,'frequency':frequency,'quality':quality,'quality_colour':quality_colour }
 
 def parse_mediainfo_output(mediainfo_output):
@@ -584,7 +597,7 @@ class makeBitGraphThread(QRunnable):
             json_packet_data = json.loads(output_str)
             packets = json_packet_data["packets"]
         except Exception as e:
-            debug_log(e)
+            debug_log("Exception in makeBitGraphThread: {}".format(e))
             return None
     
         for dict in packets:
@@ -979,12 +992,16 @@ class Main(QMainWindow):
         self.ui.setupUi(self)
 
         self.ui.actionExit.triggered.connect(sys.exit)
+        self.ui.actionExit.setText("E&xit")
         self.ui.actionScan_Files.triggered.connect(self.scan_Files)
         self.ui.actionFolder_Select.triggered.connect(partial(self.select_Folder,"",None))
+        self.ui.actionFolder_Select.setText("Select F&older")
         self.ui.actionClear_Filelist.triggered.connect(self.clear_List)
         self.ui.actionStop.triggered.connect(self.cancel_Tasks)
         self.ui.actionOptions.triggered.connect(self.edit_Options)
+        self.ui.actionOptions.setText("&Options")
         self.ui.actionAbout.triggered.connect(self.about_Dlg)
+        self.ui.actionAbout.setText("&About")
             
         fileMenu = self.ui.menubar.addMenu('&File')
         fileMenu.addAction(self.ui.actionFolder_Select)
@@ -1054,20 +1071,28 @@ class Main(QMainWindow):
         selected_items = self.ui.tableWidget.selectedItems()
         if not row == -1:
             menu = QMenu(self)
-            viewInfoAction = QAction("View Info",menu)
+            viewInfoAction = QAction("View &Info",menu)
             viewInfoAction.triggered.connect(partial(self.contextViewInfo,row))
             menu.addAction(viewInfoAction)
-            rescanFileAction = QAction("Scan File(s)",menu)
+            rescanFileAction = QAction("&Scan File(s)",menu)
             rescanFileAction.triggered.connect(partial(self.contextRescanFile,row,selected_items))
             if task_count > 0:
                 rescanFileAction.setEnabled(False)
+            scanFolderAction = QAction("Scan &Folder",menu)
+            scanFolderAction.triggered.connect(partial(self.contextScanFolder,row))
+            if task_count > 0:
+                scanFolderAction.setEnabled(False)
             menu.addAction(rescanFileAction)
-            playFileAction = QAction("Play File",menu)
+            menu.addAction(scanFolderAction)
+            playFileAction = QAction("&Play File",menu)
             playFileAction.triggered.connect(partial(self.contextPlayFile,row))
             menu.addAction(playFileAction)
-            browseFolderAction = QAction("Browse Folder",menu)
+            browseFolderAction = QAction("&Browse Folder",menu)
             browseFolderAction.triggered.connect(partial(self.contextBrowseFolder,row))
             menu.addAction(browseFolderAction)
+            writeReportAction = QAction("Write &Report (Folder)",menu)
+            writeReportAction.triggered.connect(partial(self.contextWriteReport,row))
+            menu.addAction(writeReportAction)
             menu.popup(self.ui.tableWidget.viewport().mapToGlobal(point))    
     
     def closeEvent(self,event):
@@ -1085,12 +1110,68 @@ class Main(QMainWindow):
         
         event.accept()        
     
+    def contextWriteReport(self,row,silent=False):
+        folderItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Folder"))
+        report_dir = folderItem.toolTip()
+        report_dir_displayname = folderItem.text()
+        file_list = []
+        for i in range(0,self.ui.tableWidget.rowCount()):
+            folderItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget,"Folder"))
+            dir = folderItem.toolTip()
+            if report_dir == dir:
+                filenameItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget,"Filename"))
+                filenameStr = filenameItem.data(dataFilenameStr)
+                modified_date = ctime(os.path.getmtime(filenameStr))
+                codecItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget,"Encoder"))
+                bitrateItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget,"Bitrate"))
+                lengthItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget,"Length"))
+                filesizeItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget,"Filesize"))
+                qualityItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget,"Quality"))
+                frequencyItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget,"Frequency"))
+                modeItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget,"Mode"))
+                file_list.append([filenameItem.text(),lengthItem.text(),filesizeItem.text(),bitrateItem.text(),
+                                    modeItem.text(),frequencyItem.text(),codecItem.text(),qualityItem.text(),modified_date])
+        
+        report_file = open(report_dir + "/specton.log","w")
+        report_file.write("Report for folder: {}\n".format(report_dir_displayname))
+        report_file.write("Generated by Specton Audio Analyser v{} (https://github.com/somesortoferror/specton) on {}\n\n".format(version,asctime()))
+        report_file.write("------------------------------------------------------------------------------------------\n")
+        report_file.write("{:<50}{:<30}{:<15}{:<15}{:<20}{:<11}{}\n".format("Filename","Last Modified Date","Duration","Filesize","Bitrate/Mode","Frequency","Encoder/Quality"))
+        for file_details in file_list:
+            report_file.write("{:<50.49}{:<30}{:<15}{:<15}{:<10} {:<10}{:<11}{}   {}\n".format(file_details[0],
+                                              file_details[8],
+                                              file_details[1],
+                                              file_details[2],
+                                              file_details[3],
+                                              file_details[4],
+                                              file_details[5],
+                                              file_details[6],
+                                              file_details[7]))
+        report_file.write("------------------------------------------------------------------------------------------\n")
+        report_file.close()
+        if not silent:
+            self.statusBar().showMessage("Report generated for folder {}".format(report_dir_displayname))
+        
+        
     def contextRescanFile(self,row,selected_items):
         file_list = []
         for filenameItem in selected_items:
             filenameItem.setData(dataScanned, False)
             file_list.append(filenameItem.data(dataFilenameStr))
         self.scan_Files(True,file_list)
+
+    def contextScanFolder(self,row):
+        folderItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Folder"))
+        scan_dir = folderItem.toolTip()
+        file_list = []
+        for i in range(0,self.ui.tableWidget.rowCount()):
+            folderItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget,"Folder"))
+            dir = folderItem.toolTip()
+            if scan_dir == dir:
+                filenameItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget,"Filename"))
+                file_list.append(filenameItem.data(dataFilenameStr))
+        self.scan_Files(True,file_list)
+                         
         
     def contextViewInfo(self, row):
         filenameItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Filename"))
