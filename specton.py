@@ -5,7 +5,7 @@
 #    Copyright (C) 2016 D. Bird <somesortoferror@gmail.com>
 #    https://github.com/somesortoferror/specton
 
-version = 0.158
+version = 0.159
 
 #    This program is free software: you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -994,7 +994,7 @@ class Main(QMainWindow):
         self.ui.actionExit.triggered.connect(sys.exit)
         self.ui.actionExit.setText("E&xit")
         self.ui.actionScan_Files.triggered.connect(self.scan_Files)
-        self.ui.actionFolder_Select.triggered.connect(partial(self.select_Folder,"",None))
+        self.ui.actionFolder_Select.triggered.connect(self.select_folder_click)
         self.ui.actionFolder_Select.setText("Select F&older")
         self.ui.actionClear_Filelist.triggered.connect(self.clear_List)
         self.ui.actionStop.triggered.connect(self.cancel_Tasks)
@@ -1054,8 +1054,7 @@ class Main(QMainWindow):
                     links = []
                     for url in event.mimeData().urls():
                         links.append(str(url.toLocalFile()))
-                    for link in links:
-                        self.select_Folder(directory=link,clearfilelist=False)
+                    self.addFilesFolders(filedirlist=links,clearfilelist=False)
                     event.accept()
                 else:
                     event.ignore()
@@ -1201,7 +1200,7 @@ class Main(QMainWindow):
     
     def addTableWidgetItem(self,row,name,dir,usecache):
         filenameStr = os.path.join(dir, name)
-        hashStr = filenameStr + str(os.path.getmtime(filenameStr)) # use mtime so hash changes if file changed
+        hashStr = filenameStr.replace("/", "\\") + str(os.path.getmtime(filenameStr)) # use mtime so hash changes if file changed
         filemd5 = md5Str(hashStr)
         
         try: # don't add same file twice
@@ -1226,7 +1225,7 @@ class Main(QMainWindow):
         qualityItem = QTableWidgetItem("")
         frequencyItem = QTableWidgetItem("")
         modeItem = QTableWidgetItem("")
-                        
+                                
         if usecache:
             if filecache.value('{}/Encoder'.format(filemd5)) is not None:
                 codecItem.setText(filecache.value('{}/Encoder'.format(filemd5)))
@@ -1262,9 +1261,38 @@ class Main(QMainWindow):
         self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Frequency"), frequencyItem)
         self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Mode"), modeItem)    
     
-    def select_Folder(self,directory,clearfilelist):
-        if directory == "":
-            directory = str(QFileDialog.getExistingDirectory(self, "Select Directory to Scan", os.path.expanduser("~")))
+    def recursiveAdd(self,directory,filemask_regex,followsymlinks=False,recursedirectories=True,usecache=True):
+        # walk through directory
+        # and add filenames to treeview
+        i = 0
+        c = 0
+        for root, dirs, files in os.walk(directory, True, None, followsymlinks):
+            c += 1
+            if c % 2 == 0:
+                QApplication.processEvents()
+                if (i > 0) and (i % 10 == 0): # update count every 10 files
+                    self.statusBar().showMessage("Scanning for files: {} found".format(i))
+            if not recursedirectories:
+                while len(dirs) > 0:
+                    dirs.pop()
+            for name in sorted(files):
+                if filemask_regex.search(name) is not None:
+                    self.addTableWidgetItem(i,name,root,usecache)
+                    i += 1
+        
+    def select_folder_click(self, checked):
+        clearfilelist = settings.value('Options/ClearFilelist',True, type=bool)
+        self.addFilesFolders([],clearfilelist)
+        
+    def addFilesFolders(self,filedirlist=[],clearfilelist=True):
+        
+        if filedirlist == []:
+            select = str(QFileDialog.getExistingDirectory(self, "Select Directory to Scan", os.path.expanduser("~")))
+            if not select == "":
+                filedirlist.append(select)
+            else:
+                return
+                
         filemask = settings.value('Options/FilemaskRegEx',defaultfilemask)
         
         try:
@@ -1278,7 +1306,7 @@ class Main(QMainWindow):
         if clearfilelist is None:
             clearfilelist = settings.value('Options/ClearFilelist',True, type=bool)
         usecache = settings.value('Options/UseCache',True, type=bool)
-        
+    
         if clearfilelist:
             self.clear_List()
 
@@ -1290,25 +1318,14 @@ class Main(QMainWindow):
         self.ui.actionScan_Files.setEnabled(False)
         self.ui.actionClear_Filelist.setEnabled(False)
         self.ui.actionFolder_Select.setEnabled(False)
+    
+        for filedir in filedirlist:
+            if os.path.isdir(filedir):
+                self.recursiveAdd(directory=filedir,filemask_regex=filemask_regex,followsymlinks=followsymlinks,recursedirectories=recursedirectories,usecache=usecache)
+            else:
+                self.addTableWidgetItem(0,os.path.basename(filedir),os.path.dirname(filedir),usecache)
+                
         
-        # walk through directory chosen by user
-        # and add filenames to treeview
-        i = 0
-        c = 0
-        for root, dirs, files in os.walk(directory, True, None, followsymlinks):
-            c += 1
-            if c % 2 == 0:
-                QApplication.processEvents()
-                if (i > 0) and (i % 10 == 0): # update count every 10 files
-                    self.statusBar().showMessage("Scanning for files: {} found".format(i))
-            if not recursedirectories:
-                while len(dirs) > 0:
-                    dirs.pop()
-            for name in files:
-                if filemask_regex.search(name) is not None:
-                    self.addTableWidgetItem(i,name,root,usecache)
-                    i += 1
-
         self.ui.tableWidget.setUpdatesEnabled(True)
         self.ui.tableWidget.setSortingEnabled(True)
         self.ui.tableWidget.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1338,7 +1355,7 @@ class Main(QMainWindow):
                 filenameItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Filename"))
                 filenameStr = filenameItem.data(dataFilenameStr)
                 if usecache:
-                    hashStr = filenameStr + str(os.path.getmtime(filenameStr))
+                    hashStr = filenameStr.replace("/", "\\") + str(os.path.getmtime(filenameStr))
                     filemd5 = md5Str(hashStr)
 
                 try:
