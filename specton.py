@@ -5,7 +5,7 @@
 #    Copyright (C) 2016 D. Bird <somesortoferror@gmail.com>
 #    https://github.com/somesortoferror/specton
 
-version = 0.159
+version = 0.161
 
 #    This program is free software: you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -33,7 +33,7 @@ import tempfile
 from functools import partial
 from hashlib import md5
 from io import TextIOWrapper
-from time import sleep, ctime, asctime
+from time import sleep, ctime, asctime, gmtime, strftime
 
 from PyQt5.QtCore import Qt, QSettings, QTimer, QThreadPool, QRunnable, QMutex, QReadLocker, QWriteLocker, QReadWriteLock, QEvent, QObject
 from PyQt5.QtGui import QPixmap, QColor
@@ -61,9 +61,10 @@ colourQualityWarning.setAlpha(100)
 colourQualityBad = QColor(Qt.red)
 colourQualityBad.setAlpha(100)
 
-defaultfilemask = r"\.mp3$|\.flac$|\.mpc$|\.ogg$|\.wav$|\.m4a$|\.aac$|\.ac3$|\.ra$|\.au$"
+defaultfilemask = r"\.mp3$|\.opus$|\.flac$|\.mpc$|\.ogg$|\.wav$|\.m4a$|\.aac$|\.ac3$|\.ra$|\.au$"
 
 class fakestd(object):
+    encoding = 'utf-8'
     def write(self, string):
         pass
 
@@ -72,14 +73,21 @@ class fakestd(object):
 
 def debug_log(debug_str):
     logging.debug(debug_str)
+    
+frozen = bool(getattr(sys, 'frozen', False))
         
-if os.name == 'nt':
-    if sys.stdout is not None:
-        sys.stdout = TextIOWrapper(sys.stdout.buffer,sys.stdout.encoding,'backslashreplace') # fix for printing utf8 strings on windows
-    else:
-        # win32gui doesn't have a console
+if os.name == 'nt': # various hacks
+    if not frozen:
+        if sys.stdout is not None:
+            sys.stdout = TextIOWrapper(sys.stdout.buffer,sys.stdout.encoding,'backslashreplace') # fix for printing utf8 strings on windows
+        else:
+            # win32gui doesn't have a console
+            sys.stdout = fakestd()
+            sys.stderr = fakestd()
+    else: # frozen
         sys.stdout = fakestd()
         sys.stderr = fakestd()
+        
 
 if __name__ == '__main__':
     main_q = queue.Queue()
@@ -116,7 +124,7 @@ findGuessEncBin = partial(findBinary,'Paths/mp3guessenc_bin','scanners/mp3guesse
 findMediaInfoBin = partial(findBinary,'Paths/mediainfo_bin','scanners/MediaInfo.exe','/usr/bin/mediainfo')
 findFlacBin = partial(findBinary,'Paths/flac_bin','scanners/flac.exe','/usr/bin/flac')
 findauCDtectBin = partial(findBinary,'Paths/aucdtect_bin','scanners/auCDtect.exe','/usr/bin/aucdtect')
-findSoxBin = partial(findBinary,'Paths/sox_bin','scanners/sox.exe','/usr/bin/sox')
+findSoxBin = partial(findBinary,'Paths/sox_bin','scanners/sox/sox.exe','/usr/bin/sox')
 
 
 def findffprobeBin(settings_key='Paths/ffprobe_bin', nt_path='scanners/ffmpeg/ffprobe.exe', posix_path='/usr/bin/ffprobe'):
@@ -280,11 +288,12 @@ if __name__ == '__main__':
     mediainfo_format_regex = re.compile(r"^Audio.*?Format.*?\: (.*?)$",re.DOTALL|re.MULTILINE)
     mediainfo_encoder_regex = re.compile(r"^Writing library.*\: (.*)",re.MULTILINE)
     mediainfo_length_regex = re.compile(r"^Audio.*?Duration.*?\: (.*?)$",re.DOTALL|re.MULTILINE)
-    mediainfo_bitrate_regex = re.compile(r"^Bit rate.*\: ([\d\. ]* [MK]bps)",re.MULTILINE)
+    mediainfo_bitrate_regex = re.compile(r"^Bit rate.*?\: |^General.*Overall bit rate\s*?\:\s*?([\d\.]* [GMK]bps)",re.MULTILINE|re.DOTALL)
     mediainfo_bitrate_mode_regex = re.compile(r"^Audio.*Bit rate mode\s*: ([A-Za-z]*)",re.MULTILINE|re.DOTALL) # variable or constant
     mediainfo_filesize_regex = re.compile(r"^File size.*\: (.* .iB|.* Bytes)",re.MULTILINE)
     mediainfo_frequency_regex = re.compile(r"^Audio.*Sampling rate\s*: ([\d\.]* KHz)",re.MULTILINE|re.DOTALL)
-    mediainfo_mode_regex = re.compile(r"^Audio.*Mode\s*: ([a-zA-Z ]*)",re.MULTILINE|re.DOTALL) # stereo/js
+    mediainfo_bitdepth_regex = re.compile(r"^Audio.*Bit depth\s*: ([\d\.]*) bits",re.MULTILINE|re.DOTALL)
+    mediainfo_mode_regex = re.compile(r"^Audio.*[Mm]ode\s*: ([a-zA-Z ]*)",re.MULTILINE|re.DOTALL) # stereo/js
     aucdtect_regex = re.compile(r"^This track looks like (.*) with probability (\d*)%",re.MULTILINE)
     mp3_bitrate_data_regex = re.compile(r"(\d*?) kbps \: *(\d*?) \(")
     mp3_lame_tag_preset_regex = re.compile(r"^Lame tag.*Preset\s*:\s*(.*?)Orig",re.MULTILINE|re.DOTALL)
@@ -307,7 +316,14 @@ def doMP3Checks(bitrate,encoder,encoder_string,header_errors,mp3guessenc_output)
             colour = colourQualityGood
     elif encoder.startswith("Xing (old)") or encoder.startswith("BladeEnc") or encoder.startswith("dist10"):
         colour = colourQualityWarning
-    elif encoder_string.startswith("LAME"):
+    elif encoder_string.upper().startswith("LAME"):
+        bitrate_int = float(bitrate.split()[0])
+        
+        if bitrate_int > 300:
+            colour = colourQualityGood # default if no lame tag
+        elif bitrate_int > 170:
+            colour = colourQualityOk
+            
         search = mp3_lame_tag_preset_regex.search(mp3guessenc_output)
         if search is not None:
             preset = search.group(1).strip()
@@ -472,6 +488,7 @@ def parse_mediainfo_output(mediainfo_output):
     filesize=""
     audio_format="Unknown"
     frequency=""
+    bit_depth=""
     bitrate_mode=""
     mode=""
     format_mode=""
@@ -515,6 +532,13 @@ def parse_mediainfo_output(mediainfo_output):
     search = mediainfo_frequency_regex.search(mediainfo_output)
     if search is not None:
         frequency = search.group(1)
+        
+    search = mediainfo_bitdepth_regex.search(mediainfo_output)
+    if search is not None:
+        bit_depth = search.group(1)
+        
+    if not bit_depth == "":
+        frequency = "{}/{}".format(bit_depth,frequency)
 
     if (not mode == "") and (not bitrate_mode == ""):
         format_mode = "{}/{}".format(mode,bitrate_mode)
@@ -524,7 +548,7 @@ def parse_mediainfo_output(mediainfo_output):
         format_mode = "{}".format(bitrate_mode)
             
     return {'result_type':'mediainfo','encoder':encoder, 'audio_format':audio_format, 'bitrate':bitrate ,'encoder_string':encoder_string, 
-            'length':length,'mode':format_mode,'frequency':frequency, 'filesize':filesize, 'error':False, 'quality':None}
+            'length':length.replace("mn","m"),'mode':format_mode,'frequency':frequency,'filesize':filesize, 'error':False, 'quality':None}
 
 def parse_aucdtect_output(aucdtect_output):
     detection = ""
@@ -1120,7 +1144,7 @@ class Main(QMainWindow):
             if report_dir == dir:
                 filenameItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget,"Filename"))
                 filenameStr = filenameItem.data(dataFilenameStr)
-                modified_date = ctime(os.path.getmtime(filenameStr))
+                modified_date = strftime("%d/%m/%Y %H:%M:%S UTC",gmtime(os.path.getmtime(filenameStr)))
                 codecItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget,"Encoder"))
                 bitrateItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget,"Bitrate"))
                 lengthItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget,"Length"))
@@ -1135,15 +1159,15 @@ class Main(QMainWindow):
         report_file.write("Report for folder: {}\n".format(report_dir_displayname))
         report_file.write("Generated by Specton Audio Analyser v{} (https://github.com/somesortoferror/specton) on {}\n\n".format(version,asctime()))
         report_file.write("------------------------------------------------------------------------------------------\n")
-        report_file.write("{:<50}{:<30}{:<15}{:<15}{:<20}{:<11}{}\n".format("Filename","Last Modified Date","Duration","Filesize","Bitrate/Mode","Frequency","Encoder/Quality"))
+        report_file.write("{:<50}{:<28}{:<15}{:<15}{:<14}{:<25}{}\n".format("Filename","Last Modified Date","Duration","Filesize","Frequency","Bitrate/Mode","Encoder/Quality"))
         for file_details in file_list:
-            report_file.write("{:<50.49}{:<30}{:<15}{:<15}{:<10} {:<10}{:<11}{}   {}\n".format(file_details[0],
+            report_file.write("{:<50.49}{:<28}{:<15}{:<15}{:<14}{:<10} {:<14}{}  {}\n".format(file_details[0],
                                               file_details[8],
                                               file_details[1],
                                               file_details[2],
+                                              file_details[5],
                                               file_details[3],
                                               file_details[4],
-                                              file_details[5],
                                               file_details[6],
                                               file_details[7]))
         report_file.write("------------------------------------------------------------------------------------------\n")
