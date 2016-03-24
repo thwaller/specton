@@ -1,0 +1,6 @@
+{
+  "name": "Specton Audio Analyser",
+  "tagline": "Cross platform (Windows/Linux/Mac OS X) audio file analysis tool",
+  "body": "### What is this\r\nA tool to identify and analyse various audio formats. View bitrate and encoder info, spectrogram and bitrate graphs etc\r\n\r\nCurrently in Alpha release (that means it might not work)\r\n\r\nSupports: MP3, AAC, Vorbis, FLAC, Opus, Musepack, Wav and more\r\n\r\n### How to get it\r\nWindows: Use the binary installers\r\n\r\n### Screenshots\r\nComing soon\r\n\r\n### License\r\nGNU GPL 2.0\r\n\r\n### Author\r\n@somesortoferror\r\n\r\n### Support or Contact\r\n[Issues](https://github.com/somesortoferror/specton/issues)\r\n",
+  "note": "Don't delete this file! It's used internally to help with page regeneration."
+}
