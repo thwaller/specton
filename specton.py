@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
 # -*- coding: UTF-8 -*-
 
-#    Specton Audio Analyser
-#    Copyright (C) 2016 D. Bird <somesortoferror@gmail.com>
-#    https://github.com/somesortoferror/specton
+'''
+    Specton Audio Analyser
+    Copyright (C) 2016 D. Bird <somesortoferror@gmail.com>
+    https://github.com/somesortoferror/specton 
+    
+'''
 
-version = 0.161
+version = 0.162
 
-#    This program is free software: you can redistribute it and/or modify
-#    it under the terms of the GNU General Public License as published by
-#    the Free Software Foundation, either version 3 of the License, or
-#    (at your option) any later version.
-#
-#    This program is distributed in the hope that it will be useful,
-#    but WITHOUT ANY WARRANTY; without even the implied warranty of
-#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#    GNU General Public License for more details.
-#
-#    You should have received a copy of the GNU General Public License
-#    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+'''
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <http://www.gnu.org/licenses/>. 
+'''
 
 import fnmatch
 import json
@@ -33,7 +38,7 @@ import tempfile
 from functools import partial
 from hashlib import md5
 from io import TextIOWrapper
-from time import sleep, ctime, asctime, gmtime, strftime
+from time import sleep, ctime, asctime, gmtime, strftime, time
 
 from PyQt5.QtCore import Qt, QSettings, QTimer, QThreadPool, QRunnable, QMutex, QReadLocker, QWriteLocker, QReadWriteLock, QEvent, QObject
 from PyQt5.QtGui import QPixmap, QColor
@@ -62,6 +67,8 @@ colourQualityBad = QColor(Qt.red)
 colourQualityBad.setAlpha(100)
 
 defaultfilemask = r"\.mp3$|\.opus$|\.flac$|\.mpc$|\.ogg$|\.wav$|\.m4a$|\.aac$|\.ac3$|\.ra$|\.au$"
+
+scan_start_time = time()
 
 class fakestd(object):
     encoding = 'utf-8'
@@ -92,14 +99,14 @@ if os.name == 'nt': # various hacks
 if __name__ == '__main__':
     main_q = queue.Queue()
     infodlg_q = queue.Queue()
-    infodlg_list = [] # list of dialog windows
+    infodlg_list = set() # list of dialog windows
     infodlg_threadpool = QThreadPool(None)
     scanner_threadpool = QThreadPool(None)
-    TableHeaders = ["Folder","Filename","Length","Bitrate","Mode","Frequency","Filesize","Encoder","Quality"]
+    TableHeaders = ("Folder","Filename","Length","Bitrate","Mode","Frequency","Filesize","Encoder","Quality")
     ql = QReadWriteLock()
     task_count = 0
     task_total = 0
-    file_hashlist = []
+    file_hashlist = set()
     
     settings = QSettings(QSettings.IniFormat,QSettings.UserScope,"Specton","Specton-settings")
     filecache = QSettings(QSettings.IniFormat,QSettings.UserScope,"Specton","Specton-cache")
@@ -109,8 +116,7 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG, format='%(relativeCreated)6d %(threadName)s - %(message)s')
 
 def findBinary(settings_key="", nt_path="", posix_path=""):
-# find executable files
-# use paths from settings if available else use default locations
+    ''' find executable files - use paths from settings if available else use default locations '''
     bin = settings.value(settings_key)
     if bin is None:
         if os.name == 'nt':
@@ -141,14 +147,11 @@ def findffprobeBin(settings_key='Paths/ffprobe_bin', nt_path='scanners/ffmpeg/ff
     return bin
         
 def getTempFileName():
-    temp_file = tempfile.NamedTemporaryFile()
-    temp_file_str = temp_file.name
-    temp_file.close()
-    return temp_file_str
+    with tempfile.NamedTemporaryFile() as temp_file:
+        return temp_file.name
 
 def runCmd(cmd,cmd_timeout=300):
-# run command without showing console window on windows
-# return stdout as string
+    ''' run command without showing console window on windows - return stdout as string '''
     startupinfo = None
     output = ""
     if os.name == 'nt':
@@ -222,7 +225,7 @@ class scanner_Thread(QRunnable):
                 debug_log("scanner thread finished with error - row {}, result: {}, task count={}".format(self.row,output_str,task_count))
                 
 class aucdtect_Thread(QRunnable):
-# run aucdtect on a file and post results to queue
+    ''' run aucdtect on a file and post results to queue '''
     def __init__(self,row,filenameStr,decoder_bin,decoder_options,aucdtect_bin,aucdtect_options,debug_enabled,cmd_timeout):
         super(aucdtect_Thread, self).__init__()
         self.row = row
@@ -288,7 +291,7 @@ if __name__ == '__main__':
     mediainfo_format_regex = re.compile(r"^Audio.*?Format.*?\: (.*?)$",re.DOTALL|re.MULTILINE)
     mediainfo_encoder_regex = re.compile(r"^Writing library.*\: (.*)",re.MULTILINE)
     mediainfo_length_regex = re.compile(r"^Audio.*?Duration.*?\: (.*?)$",re.DOTALL|re.MULTILINE)
-    mediainfo_bitrate_regex = re.compile(r"^Bit rate.*?\: |^General.*Overall bit rate\s*?\:\s*?([\d\.]* [GMK]bps)",re.MULTILINE|re.DOTALL)
+    mediainfo_bitrate_regex = re.compile(r"^(?:General.*Overall bit rate|Audio.*Bit rate).*?: ([\d\. ]* [GMK]bps)",re.MULTILINE|re.DOTALL)
     mediainfo_bitrate_mode_regex = re.compile(r"^Audio.*Bit rate mode\s*: ([A-Za-z]*)",re.MULTILINE|re.DOTALL) # variable or constant
     mediainfo_filesize_regex = re.compile(r"^File size.*\: (.* .iB|.* Bytes)",re.MULTILINE)
     mediainfo_frequency_regex = re.compile(r"^Audio.*Sampling rate\s*: ([\d\.]* KHz)",re.MULTILINE|re.DOTALL)
@@ -301,14 +304,12 @@ if __name__ == '__main__':
     mp3_duration_format_regex = re.compile(r"(\d*?):(\d*?):(\d*\.\d*)")
     
 def doMP3Checks(bitrate,encoder,encoder_string,header_errors,mp3guessenc_output):
-# do some MP3 quality checks here
+    ''' do some MP3 quality checks '''
     colour = colourQualityUnknown
     text = None
     
     if int(header_errors) > 0:
-        colour = colourQualityBad
-        text = "Errors"
-        return text, colour
+        return "Errors", colourQualityBad
                 
     if encoder.startswith("FhG"):
         bitrate_int = float(bitrate.split()[0])
@@ -391,8 +392,7 @@ def get_bitrate_hist_data(frame_hist):
     
     
 def parse_mp3guessenc_output(mp3guessenc_output):
-# parse mp3guessenc output using regex
-# return parsed variables as a dictionary
+    ''' parse mp3guessenc output using regex - return parsed variables as a dictionary '''
     encoder=""
     bitrate=""
     bitrate_mode="" # vbr or cbr
@@ -589,16 +589,14 @@ def md5Str(Str):
     return md5(Str.encode('utf-8')).hexdigest()
             
 def headerIndexByName(table,headerName):
-# find column in tablewidget from headerName
-    index = -1
+    ''' find column in tablewidget from headerName '''
     for i in range(0, table.columnCount()):
-        headerItem = table.horizontalHeaderItem(i)
-        if headerItem.text() == headerName:
-            index = i
-    return index
+        if table.horizontalHeaderItem(i).text() == headerName:
+            return i
+    return -1
     
 class makeBitGraphThread(QRunnable):
-# generate bitrate graph using ffprobe/avprobe
+    ''' generate bitrate graph using ffprobe/avprobe '''
     def __init__(self,fn,grid,ffprobe_bin,cmd_timeout):
         super(makeBitGraphThread, self).__init__()
         self.fn = fn
@@ -667,7 +665,7 @@ class FileInfo(QDialog):
         self.ui.setupUi(self)
         self.setWindowTitle("Info - {}".format(os.path.basename(filenameStr)))
         self.filename = filenameStr
-        infodlg_list.append(self) # keep track of dialogs so we can reuse them if still open
+        infodlg_list.add(self) # keep track of dialogs so we can reuse them if still open
         
         windowGeometry = settings.value("State/InfoWindowGeometry")
         if windowGeometry is not None:
@@ -750,8 +748,7 @@ class FileInfo(QDialog):
                
          
     def updateGui(self):
-    # called from timer
-    # subprocesses post to queue when finished
+        ''' called from timer - subprocesses post to queue when finished '''
         if not infodlg_q.empty():
             update_info = infodlg_q.get(False,1)
             update_type = update_info[0] # type of update e.g. "Spectrogram"
@@ -978,6 +975,8 @@ class Options(QDialog):
         settings.setValue('Options/SpectrogramPalette',spinBox_spectrogram_palette.value())
         checkBox_debug = self.findChild(QCheckBox, "checkBox_debug")
         settings.setValue('Options/Debug',checkBox_debug.isChecked())
+        global debug_enabled
+        debug_enabled = checkBox_debug.isChecked()
         checkBox_savewindowstate = self.findChild(QCheckBox, "checkBox_savewindowstate")
         settings.setValue('Options/SaveWindowState',checkBox_savewindowstate.isChecked())
         checkBox_clearfilelist = self.findChild(QCheckBox, "checkBox_clearfilelist")
@@ -1155,13 +1154,13 @@ class Main(QMainWindow):
                 file_list.append([filenameItem.text(),lengthItem.text(),filesizeItem.text(),bitrateItem.text(),
                                     modeItem.text(),frequencyItem.text(),codecItem.text(),qualityItem.text(),modified_date])
         
-        report_file = open(report_dir + "/specton.log","w")
-        report_file.write("Report for folder: {}\n".format(report_dir_displayname))
-        report_file.write("Generated by Specton Audio Analyser v{} (https://github.com/somesortoferror/specton) on {}\n\n".format(version,asctime()))
-        report_file.write("------------------------------------------------------------------------------------------\n")
-        report_file.write("{:<50}{:<28}{:<15}{:<15}{:<14}{:<25}{}\n".format("Filename","Last Modified Date","Duration","Filesize","Frequency","Bitrate/Mode","Encoder/Quality"))
-        for file_details in file_list:
-            report_file.write("{:<50.49}{:<28}{:<15}{:<15}{:<14}{:<10} {:<14}{}  {}\n".format(file_details[0],
+        with open(report_dir + "/specton.log","w") as report_file:
+            report_file.write("Report for folder: {}\n".format(report_dir_displayname))
+            report_file.write("Generated by Specton Audio Analyser v{} (https://github.com/somesortoferror/specton) on {}\n\n".format(version,asctime()))
+            report_file.write("------------------------------------------------------------------------------------------\n")
+            report_file.write("{:<50}{:<28}{:<15}{:<15}{:<14}{:<25}{}\n".format("Filename","Last Modified Date","Duration","Filesize","Frequency","Bitrate/Mode","Encoder/Quality"))
+            for file_details in file_list:
+                report_file.write("{:<50.49}{:<28}{:<15}{:<15}{:<14}{:<10} {:<14}{}  {}\n".format(file_details[0],
                                               file_details[8],
                                               file_details[1],
                                               file_details[2],
@@ -1170,8 +1169,8 @@ class Main(QMainWindow):
                                               file_details[4],
                                               file_details[6],
                                               file_details[7]))
-        report_file.write("------------------------------------------------------------------------------------------\n")
-        report_file.close()
+            report_file.write("------------------------------------------------------------------------------------------\n")
+            
         if not silent:
             self.statusBar().showMessage("Report generated for folder {}".format(report_dir_displayname))
         
@@ -1227,15 +1226,10 @@ class Main(QMainWindow):
         hashStr = filenameStr.replace("/", "\\") + str(os.path.getmtime(filenameStr)) # use mtime so hash changes if file changed
         filemd5 = md5Str(hashStr)
         
-        try: # don't add same file twice
-            index = file_hashlist.index(filemd5)
-        except:
-            index = -1 # not found in list
+        if filemd5 in file_hashlist:
+            return # don't add same file twice
         
-        if index > -1:
-            return # file already added
-        else:
-            file_hashlist.append(filemd5)
+        file_hashlist.add(filemd5)
 
         filenameItem = QTableWidgetItem(name)
         filenameItem.setToolTip(filenameStr)
@@ -1286,16 +1280,16 @@ class Main(QMainWindow):
         self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Mode"), modeItem)    
     
     def recursiveAdd(self,directory,filemask_regex,followsymlinks=False,recursedirectories=True,usecache=True):
-        # walk through directory
-        # and add filenames to treeview
+        ''' walk through directory and add filenames to treeview'''
         i = 0
         c = 0
+        scan_start = time()
         for root, dirs, files in os.walk(directory, True, None, followsymlinks):
             c += 1
             if c % 2 == 0:
                 QApplication.processEvents()
                 if (i > 0) and (i % 10 == 0): # update count every 10 files
-                    self.statusBar().showMessage("Scanning for files: {} found".format(i))
+                    self.statusBar().showMessage("Scanning for files: {} found ({} files/s)".format(i, round(i/(time()-scan_start))))
             if not recursedirectories:
                 while len(dirs) > 0:
                     dirs.pop()
@@ -1371,7 +1365,7 @@ class Main(QMainWindow):
                 scanner_threadpool.start(thread)
  
     def update_Table(self,row,song_info):
-        # update table with info from scanner
+            ''' update table with info from scanner '''
             usecache = settings.value('Options/UseCache',True, type=bool)
             error_status = song_info['error']
             result_type = song_info['result_type']
@@ -1461,8 +1455,7 @@ class Main(QMainWindow):
                 codecItem.setText("error scanning file")
                 
     def updateMainGui(self):
-    # runs from timer
-    # takes results from main_q and adds to tablewidget
+        ''' runs from timer - takes results from main_q and adds to tablewidget '''
 
         while not main_q.empty():
             if debug_enabled:
@@ -1511,6 +1504,10 @@ class Main(QMainWindow):
                     self.ui.actionFolder_Select.setEnabled(True)
                     self.ui.tableWidget.setSortingEnabled(True)
                 else:
+                    scan_rate = tasks_done/(time()-scan_start_time)
+                    files_scanned = task_total-task_count
+                    eta_min = (task_count/scan_rate)/60 # estimated finish time in mins
+                    self.statusBar().showMessage('Scanning... {}/{} files scanned ({} files/min, {}m {}s estimated)'.format(files_scanned, task_total, round(scan_rate*60), int(eta_min), round((eta_min-int(eta_min))*60)))
                     if debug_enabled:
                         debug_log("updateMainGui: calling update_Table for row {}".format(row))
                     self.ui.tableWidget.setUpdatesEnabled(False)
@@ -1526,8 +1523,8 @@ class Main(QMainWindow):
             task_total += 1
                         
     def scan_Files(self,checked,filelist=None):
-    # loop through table and queue scanner processes for all files
-    # filelist - optional list of files to scan, all others will be skipped
+        ''' loop through table and queue scanner processes for all files
+        filelist - optional list of files to scan, all others will be skipped '''
         self.ui.actionScan_Files.setEnabled(False)
         self.ui.actionClear_Filelist.setEnabled(False)
         self.ui.actionFolder_Select.setEnabled(False)
@@ -1604,7 +1601,9 @@ class Main(QMainWindow):
                             thread_list.append(thread)
                                         
             QApplication.processEvents()
-            
+        
+        global scan_start_time
+        scan_start_time = time() # used to calculate scanning rate
         self.statusBar().showMessage('Scanning files...')
         for thread in thread_list:
             self.doScanFile(thread)
