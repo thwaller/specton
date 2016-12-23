@@ -106,6 +106,9 @@ class Ui_MainWindow(object):
         icon7.addPixmap(QtGui.QPixmap("icons/150-cogs.png"), QtGui.QIcon.Normal, QtGui.QIcon.Off)
         self.actionOptions.setIcon(icon7)
         self.actionOptions.setObjectName("actionOptions")
+        self.actionViewLogDir = QtWidgets.QAction(MainWindow)
+        self.actionViewLogDir.setIcon(icon3)
+        self.actionViewLogDir.setObjectName("actionViewLogDir")
         self.toolBar.addAction(self.actionFolder_Select)
         self.toolBar.addSeparator()
         self.toolBar.addAction(self.actionScan_Files)
@@ -134,4 +137,6 @@ class Ui_MainWindow(object):
         self.actionExit.setText(_translate("MainWindow", "Exit"))
         self.actionAbout.setText(_translate("MainWindow", "About"))
         self.actionOptions.setText(_translate("MainWindow", "Options"))
+        self.actionViewLogDir.setText(_translate("MainWindow", "Logs"))
+        self.actionViewLogDir.setToolTip(_translate("MainWindow", "Open Log Directory"))
 

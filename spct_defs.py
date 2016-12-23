@@ -3,8 +3,12 @@
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 import re
+from appdirs.appdirs import AppDirs
 
+AppName = "Specton"
 version = 0.164
+
+app_dirs = AppDirs(AppName, False)
 
 dataScanned=32
 dataFilenameStr=33

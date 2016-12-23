@@ -235,6 +235,18 @@
     <string>Options</string>
    </property>
   </action>
+  <action name="actionViewLogDir">
+   <property name="icon">
+    <iconset>
+     <normaloff>icons/049-folder-open.png</normaloff>icons/049-folder-open.png</iconset>
+   </property>
+   <property name="text">
+    <string>Logs</string>
+   </property>
+   <property name="toolTip">
+    <string>Open Log Directory</string>
+   </property>
+  </action>
  </widget>
  <resources/>
  <connections/>

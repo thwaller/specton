@@ -43,22 +43,30 @@ from spct_utils import *
 from spct_defs import *
 from spct_threads import *
 
-
 scan_start_time = time()
     
 frozen = bool(getattr(sys, 'frozen', False))
-        
+                
 if os.name == 'nt': # various hacks
+    stderr_fn = os.path.join(app_dirs.user_log_dir, "stderr.log")
+    stdout_fn = os.path.join(app_dirs.user_log_dir, "stdout.log")
+    try:
+        os.remove(stderr_fn)
+        os.remove(stdout_fn)
+    except:
+        pass
+
     if not frozen:
         if sys.stdout is not None:
             sys.stdout = TextIOWrapper(sys.stdout.buffer,sys.stdout.encoding,'backslashreplace') # fix for printing utf8 strings on windows
         else:
             # win32gui doesn't have a console
-            sys.stdout = fakestd()
-            sys.stderr = fakestd()
+            if sys.executable.endswith("pythonw.exe"):
+                sys.stdout = open(stdout_fn, "w");
+                sys.stderr = open(stderr_fn, "w")
     else: # frozen
-        sys.stdout = fakestd()
-        sys.stderr = fakestd()
+        sys.stdout = open(stdout_fn, "w");
+        sys.stderr = open(stderr_fn, "w")
         
 
 if __name__ == '__main__':
@@ -809,12 +817,16 @@ class Main(QMainWindow):
         self.ui.actionOptions.setText("&Options")
         self.ui.actionAbout.triggered.connect(self.about_Dlg)
         self.ui.actionAbout.setText("&About")
+        self.ui.actionViewLogDir.triggered.connect(self.viewLogDir)
+        self.ui.actionViewLogDir.setText("&Logs")
             
         fileMenu = self.ui.menubar.addMenu('&File')
         fileMenu.addAction(self.ui.actionFolder_Select)
         fileMenu.addAction(self.ui.actionExit)
         editMenu = self.ui.menubar.addMenu('&Edit')
         editMenu.addAction(self.ui.actionOptions)
+        viewMenu = self.ui.menubar.addMenu('&View')
+        viewMenu.addAction(self.ui.actionViewLogDir)
         helpMenu = self.ui.menubar.addMenu('&Help')
         helpMenu.addAction(self.ui.actionAbout)
 
@@ -872,6 +884,10 @@ class Main(QMainWindow):
         dialog = Options()
         result = dialog.exec_()
 
+    def viewLogDir(self):
+        if os.name == 'nt':
+            subprocess.Popen("explorer \"" + os.path.normpath(app_dirs.user_log_dir) + "\"")
+    
     def tableContextMenu(self, point):
         row = self.ui.tableWidget.rowAt(point.y())
         selected_items = self.ui.tableWidget.selectedItems()

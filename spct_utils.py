@@ -5,16 +5,16 @@ import subprocess
 import logging
 import os
 from hashlib import md5
+from spct_defs import app_dirs
 
-logging.basicConfig(level=logging.DEBUG, format='%(relativeCreated)6d %(threadName)s - %(message)s')
-
-class fakestd(object):
-    encoding = 'utf-8'
-    def write(self, string):
-        pass
-
-    def flush(self):
-        pass
+os.makedirs(app_dirs.user_log_dir, exist_ok=True)
+logfile = os.path.join(app_dirs.user_log_dir, "debug.log")
+try:
+   os.remove(logfile)
+except:
+   pass
+   
+logging.basicConfig(filename=logfile, level=logging.DEBUG, format='%(relativeCreated)6d %(threadName)s - %(message)s')
 
 def debug_log(debug_str):
     logging.debug(debug_str)
@@ -38,7 +38,7 @@ def runCmd(cmd,cmd_timeout=300):
     if proc is not None:
         try:
             output, output_err = proc.communicate()
-        except TimeoutExpired(timeout=cmd_timeout):
+        except subprocess.TimeoutExpired(timeout=cmd_timeout):
             proc.kill()
             debug_log("runCmd: Process killed due to timeout")
     else:
