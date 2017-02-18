@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>807</width>
-    <height>691</height>
+    <width>790</width>
+    <height>673</height>
    </rect>
   </property>
   <property name="sizePolicy">
@@ -104,11 +104,25 @@
        </widget>
       </item>
       <item>
-       <widget class="QProgressBar" name="progressBar">
-        <property name="value">
-         <number>0</number>
+       <layout class="QHBoxLayout" name="horizontalLayout">
+        <property name="sizeConstraint">
+         <enum>QLayout::SetMinimumSize</enum>
         </property>
-       </widget>
+        <item>
+         <widget class="QProgressBar" name="progressBar">
+          <property name="value">
+           <number>0</number>
+          </property>
+         </widget>
+        </item>
+        <item alignment="Qt::AlignRight">
+         <widget class="QPushButton" name="scanButton">
+          <property name="text">
+           <string>Scan</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
       </item>
      </layout>
     </item>
@@ -119,7 +133,7 @@
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>807</width>
+     <width>790</width>
      <height>21</height>
     </rect>
    </property>
@@ -245,6 +259,18 @@
    </property>
    <property name="toolTip">
     <string>Open Log Directory</string>
+   </property>
+  </action>
+  <action name="actionViewConfigDir">
+   <property name="icon">
+    <iconset>
+     <normaloff>icons/049-folder-open.png</normaloff>icons/049-folder-open.png</iconset>
+   </property>
+   <property name="text">
+    <string>Config files</string>
+   </property>
+   <property name="toolTip">
+    <string>Open Config Directory</string>
    </property>
   </action>
  </widget>

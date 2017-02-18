@@ -3,7 +3,7 @@
 import tempfile
 import subprocess
 import logging
-import os
+import os, sys
 from hashlib import md5
 from spct_defs import app_dirs
 
@@ -22,6 +22,20 @@ def debug_log(debug_str):
 def getTempFileName():
     with tempfile.NamedTemporaryFile() as temp_file:
         return temp_file.name
+
+def openFolder(folder_name):
+    ''' open folder/dir in file viewer - platform specific '''
+    if sys.platform=='win32':
+        subprocess.Popen("explorer \"" + os.path.normpath(folder_name) + "\"")
+    elif sys.platform=='darwin':
+        subprocess.Popen(["open", folder_name])
+    elif sys.platform.startswith('linux'):
+        try:
+            subprocess.Popen(["xdg-open", folder_name])
+        except OSError:
+            debug_log("Error running xdg-open (is it installed?)")
+    else:
+        debug_log("Folder/directory viewing not implemented on this platform")
         
 def runCmd(cmd,cmd_timeout=300):
     ''' run command without showing console window on windows - return stdout and stderr as strings '''

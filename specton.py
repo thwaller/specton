@@ -810,6 +810,9 @@ class Main(QMainWindow):
         self.ui.actionExit.setText("E&xit")
         self.ui.actionScan_Files.triggered.connect(self.scan_Files)
         self.ui.actionFolder_Select.triggered.connect(self.select_folder_click)
+        scanButton = self.findChild(QPushButton, "scanButton")
+        scanButton.clicked.connect(self.ui.actionScan_Files.trigger)        
+        scanButton.setIcon(self.ui.actionScan_Files.icon())
         self.ui.actionFolder_Select.setText("Select F&older")
         self.ui.actionClear_Filelist.triggered.connect(self.clear_List)
         self.ui.actionStop.triggered.connect(self.cancel_Tasks)
@@ -817,6 +820,8 @@ class Main(QMainWindow):
         self.ui.actionOptions.setText("&Options")
         self.ui.actionAbout.triggered.connect(self.about_Dlg)
         self.ui.actionAbout.setText("&About")
+        self.ui.actionViewConfigDir.triggered.connect(self.viewConfigDir)
+        self.ui.actionViewConfigDir.setText("&Config files")
         self.ui.actionViewLogDir.triggered.connect(self.viewLogDir)
         self.ui.actionViewLogDir.setText("&Logs")
             
@@ -826,6 +831,7 @@ class Main(QMainWindow):
         editMenu = self.ui.menubar.addMenu('&Edit')
         editMenu.addAction(self.ui.actionOptions)
         viewMenu = self.ui.menubar.addMenu('&View')
+        viewMenu.addAction(self.ui.actionViewConfigDir)
         viewMenu.addAction(self.ui.actionViewLogDir)
         helpMenu = self.ui.menubar.addMenu('&Help')
         helpMenu.addAction(self.ui.actionAbout)
@@ -885,8 +891,10 @@ class Main(QMainWindow):
         result = dialog.exec_()
 
     def viewLogDir(self):
-        if os.name == 'nt':
-            subprocess.Popen("explorer \"" + os.path.normpath(app_dirs.user_log_dir) + "\"")
+        openFolder(app_dirs.user_log_dir)
+        
+    def viewConfigDir(self):
+        openFolder(os.path.dirname(settings.fileName()))
     
     def tableContextMenu(self, point):
         row = self.ui.tableWidget.rowAt(point.y())
@@ -1138,9 +1146,7 @@ class Main(QMainWindow):
         self.ui.tableWidget.setContextMenuPolicy(Qt.NoContextMenu)
         self.ui.progressBar.setMinimum(0)
         self.ui.progressBar.setMaximum(0)
-        self.ui.actionScan_Files.setEnabled(False)
-        self.ui.actionClear_Filelist.setEnabled(False)
-        self.ui.actionFolder_Select.setEnabled(False)
+        self.disableScanning()
     
         for filedir in filedirlist:
             if os.path.isdir(filedir):
@@ -1155,9 +1161,7 @@ class Main(QMainWindow):
         self.ui.progressBar.setMaximum(100)
         self.ui.progressBar.setValue(0)
         self.statusBar().showMessage('Ready')
-        self.ui.actionScan_Files.setEnabled(True)
-        self.ui.actionClear_Filelist.setEnabled(True)
-        self.ui.actionFolder_Select.setEnabled(True)
+        self.enableScanning()
                     
     def cancel_Tasks(self):
         global task_count
@@ -1342,9 +1346,7 @@ class Main(QMainWindow):
                     if debug_enabled:
                         debug_log("updateMainGui: all threads finished, task count={}".format(task_count))
                            
-                    self.ui.actionScan_Files.setEnabled(True)
-                    self.ui.actionClear_Filelist.setEnabled(True)
-                    self.ui.actionFolder_Select.setEnabled(True)
+                    self.enableScanning()
                     self.ui.tableWidget.setSortingEnabled(True)
                     if main_q.empty():
                         if debug_enabled:
@@ -1360,13 +1362,29 @@ class Main(QMainWindow):
             global task_total
             task_count += 1
             task_total += 1
-                        
-    def scan_Files(self,checked,filelist=None):
-        ''' loop through table and queue scanner processes for all files
-        filelist - optional set of files to scan, all others will be skipped '''
+
+    def disableScanning(self):
         self.ui.actionScan_Files.setEnabled(False)
         self.ui.actionClear_Filelist.setEnabled(False)
         self.ui.actionFolder_Select.setEnabled(False)
+        scanButton = self.findChild(QPushButton, "scanButton")
+        scanButton.setText("Cancel")
+        scanButton.setIcon(self.ui.actionStop.icon())
+        scanButton.clicked.connect(self.ui.actionStop.trigger)        
+
+    def enableScanning(self):
+        self.ui.actionScan_Files.setEnabled(True)
+        self.ui.actionClear_Filelist.setEnabled(True)
+        self.ui.actionFolder_Select.setEnabled(True)
+        scanButton = self.findChild(QPushButton, "scanButton")
+        scanButton.setText("Scan")
+        scanButton.setIcon(self.ui.actionScan_Files.icon())
+        scanButton.clicked.connect(self.ui.actionScan_Files.trigger)        
+                    
+    def scan_Files(self,checked,filelist=None):
+        ''' loop through table and queue scanner processes for all files
+        filelist - optional set of files to scan, all others will be skipped '''
+        self.disableScanning()
         thread_list = []
         
         global debug_enabled
@@ -1448,8 +1466,13 @@ class Main(QMainWindow):
         global scan_start_time
         scan_start_time = time() # used to calculate scanning rate
 #        self.statusBar().showMessage('Scanning files...')
-        for thread in thread_list:
-            self.doScanFile(thread)
+
+        if len(thread_list) == 0: # nothing to do
+            self.enableScanning()
+        else:
+            debug_log("Starting threads... {} tasks".format(len(thread_list)))
+            for thread in thread_list:
+                self.doScanFile(thread)
         
     def clear_List(self):
         self.ui.progressBar.setValue(0)
