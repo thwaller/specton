@@ -3,7 +3,7 @@
 
 '''
     Specton Audio Analyser
-    Copyright (C) 2016 D. Bird <somesortoferror@gmail.com>
+    Copyright (C) 2016-17 David Bird <somesortoferror@gmail.com>
     https://github.com/somesortoferror/specton 
     
     This program is free software: you can redistribute it and/or modify
@@ -21,12 +21,10 @@
 '''
 
 import fnmatch
-import json
 import os
 import queue
 import re
 import string
-#import subprocess
 import sys
 from functools import partial
 from io import TextIOWrapper
@@ -35,25 +33,30 @@ from time import sleep, ctime, asctime, gmtime, strftime, time
 from PyQt5.QtCore import Qt, QSettings, QTimer, QThreadPool, QRunnable, QMutex, QReadLocker, QWriteLocker, QReadWriteLock, QEvent, QObject
 from PyQt5.QtGui import QPixmap, QColor
 from PyQt5.QtWidgets import QWidget, QApplication, QDialog, QDialogButtonBox,QMainWindow, QAction, QFileDialog, QTableWidgetItem, QMessageBox, QMenu, QLineEdit,QCheckBox,QSpinBox,QSlider,QTextEdit,QTabWidget,QLabel,QGridLayout,QPushButton
-from spcharts import Bitrate_Chart, BitGraph, NavigationToolbar
-from spct_info import Ui_FileInfoDialog
-from spct_main import Ui_MainWindow
-from spct_options import Ui_optionsDialog
+from dlg_info import Ui_FileInfoDialog
+from dlg_main import Ui_MainWindow
+from dlg_options import Ui_optionsDialog
+from spct_downloader import DownloaderDlg
+from spct_utils import settings, filecache
 from spct_utils import *
 from spct_defs import *
 from spct_threads import *
+from spct_parsers import *
+from spct_objects import infoobj,main_info,song_info_obj
 
 scan_start_time = time()
     
 frozen = bool(getattr(sys, 'frozen', False))
                 
 if os.name == 'nt': # various hacks
-    stderr_fn = os.path.join(app_dirs.user_log_dir, "stderr.log")
-    stdout_fn = os.path.join(app_dirs.user_log_dir, "stdout.log")
+
+    stderr_fn = os.path.join(app_dirs.user_log_dir,"stderr.log")
+    stdout_fn = os.path.join(app_dirs.user_log_dir,"stdout.log")
+
     try:
         os.remove(stderr_fn)
         os.remove(stdout_fn)
-    except:
+    except OSError:
         pass
 
     if not frozen:
@@ -61,10 +64,11 @@ if os.name == 'nt': # various hacks
             sys.stdout = TextIOWrapper(sys.stdout.buffer,sys.stdout.encoding,'backslashreplace') # fix for printing utf8 strings on windows
         else:
             # win32gui doesn't have a console
-            if sys.executable.endswith("pythonw.exe"):
-                sys.stdout = open(stdout_fn, "w");
-                sys.stderr = open(stderr_fn, "w")
+            debug_log("Redirecting stdout/err to file...")
+            sys.stdout = open(stdout_fn, "w");
+            sys.stderr = open(stderr_fn, "w")
     else: # frozen
+        debug_log("Redirecting stdout/err to file...(Frozen)")
         sys.stdout = open(stdout_fn, "w");
         sys.stderr = open(stderr_fn, "w")
         
@@ -80,322 +84,9 @@ if __name__ == '__main__':
     task_count = 0
     task_total = 0
     file_hashlist = set()
-    
-    settings = QSettings(QSettings.IniFormat,QSettings.UserScope,"Specton","Specton-settings")
-    filecache = QSettings(QSettings.IniFormat,QSettings.UserScope,"Specton","Specton-cache")
         
     debug_enabled = settings.value("Options/Debug", False, type=bool)
   
-
-def findBinary(settings_key="", nt_path="", posix_path=""):
-    ''' find executable files - use paths from settings if available else use default locations '''
-    bin = settings.value(settings_key)
-    if bin is None:
-        if os.name == 'nt':
-            return nt_path
-        elif os.name == 'posix':
-            return posix_path
-        
-    return bin
-
-findGuessEncBin = partial(findBinary,'Paths/mp3guessenc_bin','scanners/mp3guessenc.exe','/usr/local/bin/mp3guessenc')
-findMediaInfoBin = partial(findBinary,'Paths/mediainfo_bin','scanners/MediaInfo.exe','/usr/bin/mediainfo')
-findFlacBin = partial(findBinary,'Paths/flac_bin','scanners/flac.exe','/usr/bin/flac')
-findauCDtectBin = partial(findBinary,'Paths/aucdtect_bin','scanners/auCDtect.exe','/usr/bin/aucdtect')
-findSoxBin = partial(findBinary,'Paths/sox_bin','scanners/sox/sox.exe','/usr/bin/sox')
-
-def findffprobeBin(settings_key='Paths/ffprobe_bin', nt_path='scanners/ffmpeg/ffprobe.exe', posix_path='/usr/bin/ffprobe'):
-    bin = settings.value(settings_key)
-    if bin is None:
-        if os.name == 'nt':
-            return nt_path
-        elif os.name == 'posix':
-            if os.path.exists(posix_path): # ffprobe
-                return posix_path
-            elif os.path.exists(os.path.dirname(posix_path) + "/avprobe"): # also try avprobe
-                return os.path.dirname(posix_path) + "/avprobe"
-        
-    return bin                
-           
-    
-def doMP3Checks(bitrate,encoder,encoder_string,mp3guessenc_output):
-    ''' do some MP3 quality checks '''
-    colour = colourQualityUnknown
-    text = None
-                   
-    if encoder.startswith("FhG"):
-        bitrate_int = float(bitrate.split()[0])
-        if bitrate_int > 300:
-            colour = colourQualityGood
-    elif encoder.startswith("Xing (old)") or encoder.startswith("BladeEnc") or encoder.startswith("dist10"):
-        colour = colourQualityWarning
-    elif encoder_string.upper().startswith("LAME"):
-        bitrate_int = float(bitrate.split()[0])
-        
-        if bitrate_int > 300:
-            colour = colourQualityGood # default if no lame tag
-        elif bitrate_int > 170:
-            colour = colourQualityOk
-            
-        search = mp3_lame_tag_preset_regex.search(mp3guessenc_output)
-        if search is not None:
-            preset = search.group(1).strip()
-            if (preset[0:2] in ["V0","V1","V2","V3"]):
-                colour = colourQualityGood
-                return preset, colour
-            elif preset in ["256 kbps","320 kbps","Standard.","Extreme.","Insane."]: 
-                colour = colourQualityGood                
-                return "--preset {}".format(preset.lower().strip(".")), colour
-            elif ((preset in ["160", "192"]) or (preset[0:2] in ["V4","V5","V6"])):
-                colour = colourQualityOk
-                return preset, colour
-                
-        search = mp3_xing_quality_regex.search(mp3guessenc_output)
-        if search is not None:
-            try:
-                quality = int(search.group(1))
-            except:
-                quality = 0
-            try:
-                q = int(search.group(2))
-            except:
-                q = 999
-            try:
-                V = int(search.group(3))
-            except:
-                V = 999
-            if quality <= 50:
-                colour = colourQualityWarning
-            elif V <= 3:
-                colour = colourQualityGood
-            elif V <= 6:
-                colour = colourQualityOk
-            elif V < 999:
-                colour = colourQualityWarning
-            if q >= 7 and q < 999:
-                colour = colourQualityWarning
-            if q < 999 and V < 999:
-                text = "-q{} -V{}".format(q,V)
-                
-    return text, colour
-
-  
-    
-def get_bitrate_hist_data(frame_hist):
-    x = []
-    y = []
-    
-    if frame_hist is not None:
-        for line in str.splitlines(frame_hist):
-            search = mp3_bitrate_data_regex.search(line)
-            if search is not None:
-                bitrate = search.group(1)
-                x.append(int(bitrate))
-                framecount = search.group(2)
-                y.append(int(framecount))
-    
-    return (x,y)
-    
-    
-def parse_mp3guessenc_output(mp3guessenc_output):
-    ''' parse mp3guessenc output using regex - return parsed variables as a dictionary '''
-    encoder=""
-    bitrate=""
-    bitrate_mode="" # vbr or cbr
-    encoder_string=""
-    length=""
-    filesize=""
-    frame_hist=() # tuple containing two sets of int lists
-    block_usage=""
-    mode_count=""
-    mode=""
-    frequency=""
-    header_errors=0
-    format_mode=""
-
-    search = guessenc_encoder_regex.search(mp3guessenc_output)
-    if search is not None:
-        encoder=search.group(1)
-    search = guessenc_encoder_string_regex.search(mp3guessenc_output)
-    if search is not None:
-        encoder_string=search.group(1)
-    search = guessenc_bitrate_regex.search(mp3guessenc_output)
-    if search is not None:
-        bitrate=search.group(1)
-    search = guessenc_length_regex.search(mp3guessenc_output)
-    if search is not None:
-        length=search.group(1)
-    search = guessenc_filesize_regex.search(mp3guessenc_output)
-    if search is not None:
-        filesize=format_bytes(int(search.group(1)))
-    search = guessenc_frame_hist_regex.search(mp3guessenc_output)
-    if search is not None:
-        frame_hist=get_bitrate_hist_data(search.group(1))
-    search = guessenc_block_usage_regex.search(mp3guessenc_output)
-    if search is not None:
-        block_usage=search.group(1)
-    search = guessenc_mode_count_regex.search(mp3guessenc_output)
-    if search is not None:
-        mode_count=search.group(1)
-    search = guessenc_mode_regex.search(mp3guessenc_output)
-    if search is not None:
-        mode=string.capwords(search.group(1))
-        if mode.lower() == "stereo":
-            mode = "S"
-        elif mode.lower() == "joint stereo":
-            mode = "JS"
-    search = guessenc_frequency_regex.search(mp3guessenc_output)
-    if search is not None:
-        frequency_int=int(search.group(1))
-        frequency = "{} KHz".format(frequency_int/1000)
-    search = guessenc_header_errors_regex.search(mp3guessenc_output)
-    if search is not None:
-        header_errors=int(search.group(1))
-
-    try:
-        if len(frame_hist[0]) > 1:
-            bitrate_mode = "VBR"
-        elif len(frame_hist[0]) == 1:
-            bitrate_mode = "CBR"
-    except:
-        bitrate_mode = ""
-        
-    if (not mode == "") and (not bitrate_mode == ""):
-        format_mode = "{}/{}".format(mode,bitrate_mode)
-    elif (not mode == "") and (bitrate_mode == ""):
-        format_mode = "{}".format(mode)
-    elif (mode == "") and (not bitrate_mode == ""):
-        format_mode = "{}".format(bitrate_mode)
-
-    def formatMP3GuessEncDate(length):
-#        0:03:40.369 -> 3m 40s
-        search = mp3_duration_format_regex.search(length)
-        if search is not None:
-            hours = int(search.group(1))
-            minutes = int(search.group(2))
-            seconds = float(search.group(3))
-            return "{}m {}s".format((hours*60)+minutes,round(seconds))
-        else:
-            return length
-                
-    quality, quality_colour = doMP3Checks(bitrate,encoder,encoder_string,mp3guessenc_output)
-        
-    return {'result_type':'mp3guessenc','encoder':encoder, 'audio_format':'MP3', 'bitrate':bitrate ,'encoder_string':encoder_string, 
-            'length':formatMP3GuessEncDate(length), 'filesize':filesize, 'error':False, 'frame_hist':frame_hist, 
-            'block_usage':block_usage, 'mode_count':mode_count, 'mode':format_mode,'frequency':frequency,'quality':quality,'quality_colour':quality_colour,'decode_errors':header_errors }
-
-def parse_mediainfo_output(mediainfo_output):
-    encoder=""
-    bitrate=""
-    encoder_string=""
-    length=""
-    filesize=""
-    audio_format="Unknown"
-    frequency=""
-    bit_depth=""
-    bitrate_mode=""
-    mode=""
-    format_mode=""
-
-    search = mediainfo_encoder_regex.search(mediainfo_output)
-    if search is not None:
-        encoder=search.group(1)
-
-    search = mediainfo_format_regex.search(mediainfo_output)
-    if search is not None:
-        audio_format=search.group(1)
-
-    search = mediainfo_length_regex.search(mediainfo_output)
-    if search is not None:
-        length=search.group(1)
-
-    search = mediainfo_bitrate_regex.search(mediainfo_output)
-    if search is not None:
-        bitrate=search.group(1)
-
-    search = mediainfo_filesize_regex.search(mediainfo_output)
-    if search is not None:
-        filesize=search.group(1)
-        
-    search = mediainfo_bitrate_mode_regex.search(mediainfo_output)
-    if search is not None:
-        bitrate_mode=search.group(1) # vbr/cbr
-        if bitrate_mode.lower() == "constant":
-            bitrate_mode = "CBR"
-        elif bitrate_mode.lower() == "variable":
-            bitrate_mode = "VBR"
-        
-    search = mediainfo_mode_regex.search(mediainfo_output)
-    if search is not None:
-        mode=search.group(1) # stereo/js
-        if mode.lower() == "stereo":
-            mode = "S"
-        elif mode.lower() == "joint stereo":
-            mode = "JS"
-        
-    search = mediainfo_frequency_regex.search(mediainfo_output)
-    if search is not None:
-        frequency = search.group(1)
-        
-    search = mediainfo_bitdepth_regex.search(mediainfo_output)
-    if search is not None:
-        bit_depth = search.group(1)
-        
-    if not bit_depth == "":
-        frequency = "{}/{}".format(bit_depth,frequency)
-
-    if (not mode == "") and (not bitrate_mode == ""):
-        format_mode = "{}/{}".format(mode,bitrate_mode)
-    elif (not mode == "") and (bitrate_mode == ""):
-        format_mode = "{}".format(mode)
-    elif (mode == "") and (not bitrate_mode == ""):
-        format_mode = "{}".format(bitrate_mode)
-        
-    def formatMediaInfoBitrate(br):
-#        6 697 kb/s -> 6697 kbps
-        br = br.replace(" ","")
-        br = br.replace("kb/s"," kbps")
-        return br
-                    
-    return {'result_type':'mediainfo','encoder':encoder, 'audio_format':audio_format, 'bitrate':formatMediaInfoBitrate(bitrate),'encoder_string':encoder_string, 
-            'length':length.replace(" min","m"),'mode':format_mode,'frequency':frequency,'filesize':filesize, 'error':False, 'quality':None}
-
-def parse_aucdtect_output(aucdtect_output):
-    detection = ""
-    probability = ""
-    quality_colour = colourQualityUnknown
-
-    search = aucdtect_regex.search(aucdtect_output)
-    if search is not None:
-        detection=search.group(1)
-        probability=search.group(2)
-    else:
-        detection="Unknown"
-
-    try:
-        prob_int = int(probability)
-    except ValueError:
-        prob_int = 0
-        
-    if detection == "CDDA":
-        if prob_int > aucdtect_confidence_threshold:
-            quality_colour = colourQualityGood
-        else:
-            quality_colour = colourQualityWarning
-    elif detection == "MPEG":
-        if prob_int > aucdtect_confidence_threshold:
-            quality_colour = colourQualityBad
-        else:
-            quality_colour = colourQualityWarning
-    
-    if not detection == "Unknown":
-        aucdtect_quality = "{} {}%".format(detection,probability)
-    else:
-        aucdtect_quality = detection
-    
-    return {'result_type':'aucdtect','error':False,'quality':aucdtect_quality,'quality_colour':quality_colour}
-    
-
             
 def headerIndexByName(table,headerName):
     ''' find column in tablewidget from headerName '''
@@ -403,77 +94,36 @@ def headerIndexByName(table,headerName):
         if table.horizontalHeaderItem(i).text() == headerName:
             return i
     return -1
-    
-class makeBitGraphThread(QRunnable):
-    ''' generate bitrate graph using ffprobe/avprobe '''
-    def __init__(self,fn,grid,ffprobe_bin,cmd_timeout):
-        super(makeBitGraphThread, self).__init__()
-        self.fn = fn
-        self.grid = grid
-        self.ffprobe_bin = ffprobe_bin
-        self.cmd_timeout = cmd_timeout
 
-    def run(self):
-        output_str = ""
-        try:
-            output_str,output_err = runCmd([self.ffprobe_bin,"-show_packets","-of","json",self.fn],self.cmd_timeout)
-        except Exception as e:
-            debug_log(e)
-            return None
-    
-        x_list = []
-        y_list = []
-    
-        try:
-            json_packet_data = json.loads(output_str)
-            packets = json_packet_data["packets"]
-        except Exception as e:
-            debug_log("Exception in makeBitGraphThread: {}".format(e))
-            return None
-    
-        for dict in packets:
-            if not dict["codec_type"] == "audio":
-                continue
-            try:
-                x = float(dict["pts_time"]) # time
-            except (KeyError, ValueError, OverflowError) as e:
-                x = 0
-            try:
-                t = float(dict["duration_time"]) # duration
-            except (KeyError, ValueError, OverflowError) as e:
-                t = 0
-            try:
-                sz = float(dict["size"]) # size in bytes
-            except (KeyError, ValueError, OverflowError) as e:
-                sz = 0
-            try:
-                y = round((sz*8)/1000/t)
-            except (ZeroDivisionError, ValueError, OverflowError) as e:
-                y = 0
-        
-            if y > 0:
-                y_list.append(y) # bitrate
-                x_list.append(round(x,3))
-        
-#uncomment this to write out bitrate data in csv
-    
-#        if debug_enabled:
-#           temp_file = open(temp_file_str + ".csv","w")
-#           for i in range(0,len(x_list)):
-#               temp_file.write(str(x_list[i]) + "," + str(y_list[i]) + "\n")
-#           temp_file.close()
+def getTableHeaders(table):
+    header_list = []
+    for i in range(0, table.columnCount()):
+        header_list.append(table.horizontalHeaderItem(i).text())
+    return header_list
 
-        infodlg_q.put(("BitGraph",(x_list,y_list),self.grid,self.fn))
-    
+def checkPrereq(self):    
+    mi_bin = findMediaInfoBin()
+    if not os.path.exists(mi_bin):
+        if not os.name == 'nt': pass # downloader currently only implemented for windows
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Question)
+        msg.setText("Some required tools are not found. Do you want to download them now?")
+        msg.setWindowTitle("Specton")
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        retval = msg.exec_()
+        if retval == QMessageBox.Yes:
+            dlg = DownloaderDlg()
+            dlg.exec()
     
 class FileInfo(QDialog):
 # right click file info dialog
-    def __init__(self,filenameStr,scanner_output,frame_hist):
+    def __init__(self,filenameStr,frame_hist):
         super(FileInfo,self).__init__()
         self.ui = Ui_FileInfoDialog()
         self.ui.setupUi(self)
         self.setWindowTitle("Info - {}".format(os.path.basename(filenameStr)))
         self.filename = filenameStr
+        self.frame_hist = frame_hist # tuple
         infodlg_list.add(self) # keep track of dialogs so we can reuse them if still open
         
         windowGeometry = settings.value("State/InfoWindowGeometry")
@@ -483,9 +133,8 @@ class FileInfo(QDialog):
         tabWidget.clear()
 
         try:
-            if frame_hist is not None:
-                x = frame_hist[0]
-                y = frame_hist[1]
+            if self.frame_hist is not None:
+                x,y = self.frame_hist
             else:
                 x = []
                 y = []
@@ -494,13 +143,22 @@ class FileInfo(QDialog):
             y = []
             
         if debug_enabled:
-            debug_log("Frame histogram - {}".format(frame_hist))
+            debug_log("Frame histogram - {}".format(self.frame_hist))
             debug_log("Frame histogram - {}".format(x))
             debug_log("Frame histogram - {}".format(y))
         if len(x) > 0:
             try:
-                sc = Bitrate_Chart(self, width=5, height=4, dpi=100, x=x, y=y)
-                tabWidget.addTab(sc,"Bitrate Distribution")
+                if debug_enabled:
+                    debug_log("Running gnuplot to create frame histogram for file {}".format(filenameStr))
+
+                tab = QWidget()
+                grid = QGridLayout(tab)
+                grid.setObjectName("BitrateHistLayout-{}".format(md5Str(filenameStr)))
+                tabWidget.addTab(tab,"Bitrate Distribution")
+
+                thread = makeBitHistThread(filenameStr,grid.objectName(),settings.value("Options/Proc_Timeout",300, type=int),infodlg_q,findGnuPlotBin(),x,y)
+                infodlg_threadpool.start(thread)
+
             except Exception as e:
                 debug_log(e)
                 
@@ -525,7 +183,7 @@ class FileInfo(QDialog):
         if (mediainfo_bin == "") or (not os.path.exists(mediainfo_bin)):
             mediainfo_bin = ""
         
-        thread = getScannerThread(grid.objectName(),filenameStr,mp3guessenc_bin,mediainfo_bin,True,settings.value("Options/Proc_Timeout",300, type=int))
+        thread = getScannerThread(grid.objectName(),filenameStr,mp3guessenc_bin,mediainfo_bin,grid,settings.value("Options/Proc_Timeout",300, type=int))
         if thread is not None:
             infodlg_threadpool.start(thread)
                 
@@ -542,7 +200,7 @@ class FileInfo(QDialog):
             if debug_enabled:
                 debug_log("Running sox to create spectrogram for file {}".format(filenameStr))
 
-            thread = makeSpectrogramThread(filenameStr,sox_bin,temp_file,palette,grid.objectName(),settings.value("Options/Proc_Timeout",300, type=int))
+            thread = makeSpectrogramThread(filenameStr,sox_bin,temp_file,palette,grid.objectName(),settings.value("Options/Proc_Timeout",300, type=int),infodlg_q)
             infodlg_threadpool.start(thread)
             
         if settings.value('Options/EnableBitGraph',True, type=bool):
@@ -552,7 +210,7 @@ class FileInfo(QDialog):
             tabWidget.addTab(tab,"Bitrate Graph")
             if debug_enabled:
                 debug_log("Running ffprobe to create bitrate graph for file {}".format(filenameStr))
-            thread = makeBitGraphThread(filenameStr,grid.objectName(),findffprobeBin(),settings.value("Options/Proc_Timeout",300, type=int))
+            thread = makeBitGraphThread(filenameStr,grid.objectName(),findffprobeBin(),settings.value("Options/Proc_Timeout",300, type=int),infodlg_q,findGnuPlotBin())
             infodlg_threadpool.start(thread)
                
          
@@ -560,58 +218,43 @@ class FileInfo(QDialog):
         ''' called from timer - subprocesses post to queue when finished '''
         if not infodlg_q.empty():
             update_info = infodlg_q.get(False,1)
-            update_type = update_info[0] # type of update e.g. "Spectrogram"
-            update_data = update_info[1] # handler specific data
-            update_layout = update_info[2] # QLayout to update
-            update_filename = update_info[3] # name of file the update is for
+            # class infoobj
+            # type - type of update e.g. "Spectrogram"
+            # data - handler specific data
+            # layout - QLayout to update
+            # fn - name of file the update is for
 
-            if update_type == "Spectrogram":
+            if not isinstance(update_info, infoobj):
+                debug_log("updateGui received wrong data: {}".format(update_info))
+                return
+            
+            if update_info.type in ["Spectrogram", "BitGraph", "BitHist"]:
                 if debug_enabled:
-                    debug_log("updateGui received Spectrogram update")
+                    debug_log("updateGui received {} update".format(update_info.type))
                 px = QLabel()
-                dlg = findDlg(update_filename)
+                dlg = findDlg(update_info.fn)
                 if dlg is not None:
-                    layout = dlg.findChild(QGridLayout,update_layout)
+                    layout = dlg.findChild(QGridLayout,update_info.layout)
                     if layout is not None:
                         layout.addWidget(px)
-                        px.setPixmap(QPixmap(update_data))
+                        px.setPixmap(QPixmap(update_info.data))
                     else:
-                        debug_log("updateGui ran but layout not found type={} str={} layout={}".format(update_type,update_data,update_layout))
+                        debug_log("updateGui ran but layout not found type={} str={} layout={}".format(update_info.type,update_info.data,update_info.layout))
                 else:
-                    debug_log("updateGui couldn't find dlg type={} str={} layout={}".format(update_type,update_data,update_layout))                    
+                    debug_log("updateGui couldn't find dlg type={} str={} layout={}".format(update_info.type,update_info.data,update_info.layout))                    
                 try:
-                    os.remove(update_data) # delete generated spectrogram image
+                    os.remove(update_info.data) # delete generated spectrogram image
                 except:
                     pass
 
-            elif update_type == "BitGraph":
-                if debug_enabled:
-                    debug_log("updateGui received BitGraph update")
-                x = update_data[0]
-                y = update_data[1]
-                try:
-                    sc = BitGraph(self, width=5, height=4, dpi=100, x=x, y=y)
-                    dlg = findDlg(update_filename)
-                    if dlg is not None:
-                        layout = dlg.findChild(QGridLayout,update_layout)
-                        if layout is not None:
-                            layout.addWidget(sc)
-                            mpl_toolbar = NavigationToolbar(sc, self)
-                            layout.addWidget(mpl_toolbar)
-                except Exception as e:
-                    debug_log(e)
-
-            elif update_type == "Scanner_Output":
+            elif update_info.type == "Scanner_Output":
                 if debug_enabled:
                     debug_log("updateGui received Scanner_Output update")
-                dlg = findDlg(update_filename)
-                if dlg is not None:
-                    layout = dlg.findChild(QGridLayout,update_layout)
-                    if layout is not None:
-                        textEdit_scanner = QTextEdit()
-                        textEdit_scanner.setReadOnly(True)
-                        textEdit_scanner.setPlainText(update_data)
-                        layout.addWidget(textEdit_scanner)
+                if update_info.layout is not None:
+                    textEdit_scanner = QTextEdit()
+                    textEdit_scanner.setReadOnly(True)
+                    textEdit_scanner.setPlainText(update_info.data)
+                    update_info.layout.addWidget(textEdit_scanner)
 
                         
     def closeEvent(self,event):
@@ -631,28 +274,6 @@ def findDlg(searchname):
             if debug_enabled:
                 debug_log("findDlg dialog found: {} filename: {}".format(obj,searchname))
             return obj
-
-class makeSpectrogramThread(QRunnable):
-    def __init__(self,fn,sox_bin,temp_file,palette,grid,cmd_timeout):
-        super(makeSpectrogramThread, self).__init__()
-        self.fn = fn
-        self.sox_bin = sox_bin
-        self.temp_file = temp_file
-        self.palette = palette
-        self.grid = grid
-        self.cmd_timeout = cmd_timeout
-
-    def run(self):
-        try:
-            sox_output,output_err = runCmd([self.sox_bin,self.fn,"-n","spectrogram","-p{}".format(self.palette),"-o",self.temp_file],self.cmd_timeout)
-        except Exception as e:
-            debug_log(e)
-            self.temp_file = ""
-        if not self.temp_file == "":
-            try:
-                infodlg_q.put(("Spectrogram",self.temp_file,self.grid,self.fn)) # Timer watches this queue and updates gui
-            except Exception as e:
-                debug_log(e)               
             
                 
 class Options(QDialog):
@@ -783,7 +404,7 @@ class Options(QDialog):
         settings.setValue('Options/auCDtect_mode',horizontalSlider_aucdtect_mode.value())
         self.close()
         
-def getScannerThread(i,filenameStr,mp3guessenc_bin,mediainfo_bin,fileinfo_dialog_update=False,cmd_timeout=300):
+def getScannerThread(i,filenameStr,mp3guessenc_bin,mediainfo_bin,fileinfo_dialog_update=None,cmd_timeout=300):
     thread = None    
     if fnmatch.fnmatch(filenameStr, "*.mp3"):
         # use mp3guessenc if available
@@ -797,7 +418,7 @@ def getScannerThread(i,filenameStr,mp3guessenc_bin,mediainfo_bin,fileinfo_dialog
     elif not mediainfo_bin == "": # default for all files is mediainfo
         thread = scanner_Thread(i,filenameStr,mediainfo_bin,"mediainfo","-",debug_enabled,infodlg_q,main_q,fileinfo_dialog_update,cmd_timeout)
     return thread
-        
+    
 class Main(QMainWindow):
     def __init__(self):
         super(Main, self).__init__()
@@ -824,6 +445,8 @@ class Main(QMainWindow):
         self.ui.actionViewConfigDir.setText("&Config files")
         self.ui.actionViewLogDir.triggered.connect(self.viewLogDir)
         self.ui.actionViewLogDir.setText("&Logs")
+        self.ui.actionTools_Downloader.setText("&Tools downloader")
+        self.ui.actionTools_Downloader.triggered.connect(self.tools_downloader)
             
         fileMenu = self.ui.menubar.addMenu('&File')
         fileMenu.addAction(self.ui.actionFolder_Select)
@@ -833,6 +456,7 @@ class Main(QMainWindow):
         viewMenu = self.ui.menubar.addMenu('&View')
         viewMenu.addAction(self.ui.actionViewConfigDir)
         viewMenu.addAction(self.ui.actionViewLogDir)
+        viewMenu.addAction(self.ui.actionTools_Downloader)
         helpMenu = self.ui.menubar.addMenu('&Help')
         helpMenu.addAction(self.ui.actionAbout)
 
@@ -895,6 +519,11 @@ class Main(QMainWindow):
         
     def viewConfigDir(self):
         openFolder(os.path.dirname(settings.fileName()))
+        
+    def tools_downloader(self):
+        dlg = DownloaderDlg()
+        dlg.exec()
+        
     
     def tableContextMenu(self, point):
         row = self.ui.tableWidget.rowAt(point.y())
@@ -1012,7 +641,7 @@ class Main(QMainWindow):
         if dlg is None:
             if debug_enabled:
                 debug_log("contextViewInfo: dialog was None")
-            dlg = FileInfo(filenameStr,"",bitrateItem.data(dataBitrate))
+            dlg = FileInfo(filenameStr,bitrateItem.data(dataBitrate))
             if debug_enabled:
                 debug_log(dlg.objectName())
             dlg.show()
@@ -1029,7 +658,7 @@ class Main(QMainWindow):
         if os.name == 'nt':
             subprocess.Popen("explorer \"" + os.path.normpath(folderName) + "\"")
     
-    def addTableWidgetItem(self,row,name,dir,usecache):
+    def addTableWidgetItem(self,row,name,dir,usecache,tableheaders):
         filenameStr = os.path.join(dir, name)
         hashStr = filenameStr.replace("/", "\\") + str(os.path.getmtime(filenameStr)) # use mtime so hash changes if file changed
         filemd5 = md5Str(hashStr)
@@ -1081,18 +710,18 @@ class Main(QMainWindow):
                 filenameItem.setData(dataScanned, True) # previously scanned
         
         self.ui.tableWidget.insertRow(row)
-        self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Filename"), filenameItem)
-        self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Folder"), folderItem)
-        self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Encoder"), codecItem)
-        self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Bitrate"), bitrateItem)
-        self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Length"), lengthItem)
-        self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Filesize"), filesizeItem)
-        self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Quality"), qualityItem)
-        self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Errors"), errorItem)
-        self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Frequency"), frequencyItem)
-        self.ui.tableWidget.setItem(row, headerIndexByName(self.ui.tableWidget,"Mode"), modeItem)    
+        self.ui.tableWidget.setItem(row, tableheaders.index("Filename"), filenameItem)
+        self.ui.tableWidget.setItem(row, tableheaders.index("Folder"), folderItem)
+        self.ui.tableWidget.setItem(row, tableheaders.index("Encoder"), codecItem)
+        self.ui.tableWidget.setItem(row, tableheaders.index("Bitrate"), bitrateItem)
+        self.ui.tableWidget.setItem(row, tableheaders.index("Length"), lengthItem)
+        self.ui.tableWidget.setItem(row, tableheaders.index("Filesize"), filesizeItem)
+        self.ui.tableWidget.setItem(row, tableheaders.index("Quality"), qualityItem)
+        self.ui.tableWidget.setItem(row, tableheaders.index("Errors"), errorItem)
+        self.ui.tableWidget.setItem(row, tableheaders.index("Frequency"), frequencyItem)
+        self.ui.tableWidget.setItem(row, tableheaders.index("Mode"), modeItem)    
     
-    def recursiveAdd(self,directory,filemask_regex,followsymlinks=False,recursedirectories=True,usecache=True):
+    def recursiveAdd(self,directory,filemask_regex,followsymlinks=False,recursedirectories=True,usecache=True,tableheaders=[]):
         ''' walk through directory and add filenames to treeview'''
         i = 0
         c = 0
@@ -1108,7 +737,7 @@ class Main(QMainWindow):
                     dirs.pop()
             for name in sorted(files):
                 if filemask_regex.search(name) is not None:
-                    self.addTableWidgetItem(i,name,root,usecache)
+                    self.addTableWidgetItem(i,name,root,usecache,tableheaders)
                     i += 1
         
     def select_folder_click(self, checked):
@@ -1147,12 +776,14 @@ class Main(QMainWindow):
         self.ui.progressBar.setMinimum(0)
         self.ui.progressBar.setMaximum(0)
         self.disableScanning()
-    
+
+        tableheaders = getTableHeaders(self.ui.tableWidget)
+        
         for filedir in filedirlist:
             if os.path.isdir(filedir):
-                self.recursiveAdd(directory=filedir,filemask_regex=filemask_regex,followsymlinks=followsymlinks,recursedirectories=recursedirectories,usecache=usecache)
+                self.recursiveAdd(directory=filedir,filemask_regex=filemask_regex,followsymlinks=followsymlinks,recursedirectories=recursedirectories,usecache=usecache,tableheaders=tableheaders)
             else:
-                self.addTableWidgetItem(0,os.path.basename(filedir),os.path.dirname(filedir),usecache)
+                self.addTableWidgetItem(0,os.path.basename(filedir),os.path.dirname(filedir),usecache,tableheaders)
                         
         self.ui.tableWidget.setUpdatesEnabled(True)
         self.ui.tableWidget.setSortingEnabled(True)
@@ -1172,105 +803,89 @@ class Main(QMainWindow):
  
     def update_Table(self,row,song_info):
             ''' update table with info from scanner '''
+            if not isinstance(song_info, song_info_obj):
+                debug_log("update_Table received wrong data: {}".format(song_info))
+                return
             
             if debug_enabled:
-                debug_log("update_Table received song_info: {}".format(song_info))
+                debug_log("update_Table received song_info: {}".format(vars(song_info)))
             
             usecache = settings.value('Options/UseCache',True, type=bool)
-            error_status = song_info['error']
-            result_type = song_info['result_type']
+            table_headers = getTableHeaders(self.ui.tableWidget)
                             
-            if error_status:
+            if song_info.error:
                 if debug_enabled:
                     debug_log("Setting error status for row {}".format(row))
-                errorItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Errors"))
+                errorItem = self.ui.tableWidget.item(row, table_headers.index("Errors"))
                 errorItem.setBackground(colourQualityBad)
                 return
 
-            filenameItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Filename"))
+            filenameItem = self.ui.tableWidget.item(row, table_headers.index("Filename"))
             filenameStr = filenameItem.data(dataFilenameStr)
             if usecache:
                 hashStr = filenameStr.replace("/", "\\") + str(os.path.getmtime(filenameStr))
                 filemd5 = md5Str(hashStr)
                                 
-            if result_type in ("mediainfo", "mp3guessenc", "aucdtect"):
-                try:
-                    quality = song_info['quality']
-                except KeyError:
-                    quality = None
+            if song_info.result_type in ("mediainfo", "mp3guessenc", "aucdtect"):
 
-                if quality is not None:
-                    qualityItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Quality"))
-                    qualityItem.setText(quality)
+                if song_info.quality is not None:
+                    qualityItem = self.ui.tableWidget.item(row, table_headers.index("Quality"))
+                    qualityItem.setText(song_info.quality)
                     if usecache:
-                        filecache.setValue('{}/Quality'.format(filemd5),quality)
-                try:
-                    quality_colour = song_info['quality_colour']
-                except KeyError:
-                    quality_colour = None
+                        filecache.setValue('{}/Quality'.format(filemd5),song_info.quality)
                     
-                if quality_colour is not None:
-                    qualityItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Quality"))
-                    qualityItem.setBackground(quality_colour)
+                if song_info.quality_colour is not None:
+                    qualityItem = self.ui.tableWidget.item(row, table_headers.index("Quality"))
+                    qualityItem.setBackground(song_info.quality_colour)
                     if usecache:
                         filecache.setValue('{}/QualityColour'.format(filemd5),qualityItem.background())
                 
-                if result_type in ("mediainfo", "mp3guessenc"):
-                    try:
-                        decode_errors = song_info['decode_errors']
-                    except KeyError:
-                        decode_errors = 0
+                if song_info.result_type in ("mediainfo", "mp3guessenc"):
                     
-                    if decode_errors > 0:
-                        debug_log("{} decode errors detected for file {}".format(decode_errors,filenameStr))
+                    if song_info.decode_errors > 0:
+                        debug_log("{} decode errors detected for file {}".format(song_info.decode_errors,filenameStr))
                         errorColour = colourQualityBad
                     else:
                         errorColour = colourQualityGood
                     
-                    errorsItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Errors"))
-                    errorsItem.setBackground(errorColour)
+                    errorsItem = self.ui.tableWidget.item(row, table_headers.index("Errors"))
+                    if not errorsItem.background() == colourQualityBad:
+                        errorsItem.setBackground(errorColour)
                     if usecache:
                         filecache.setValue('{}/ErrorColour'.format(filemd5),errorsItem.background())                    
                         
                     filenameItem.setData(dataScanned, True) # boolean, true if file already scanned
-                    codecItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Encoder"))
-                    encoder_string = song_info['encoder_string']
-                    encoder = song_info['encoder']
-                    audio_format = song_info['audio_format']
-                    if not encoder_string == "":
-                        codecItem.setText("{} ({})".format(audio_format,encoder_string))
+                    codecItem = self.ui.tableWidget.item(row, table_headers.index("Encoder"))
+                    if not song_info.encoderstring == "":
+                        codecItem.setText("{} ({})".format(song_info.audio_format,song_info.encoderstring))
                     else:
-                        if encoder == "":
-                            codecItem.setText("{}".format(audio_format))
+                        if song_info.encoder == "":
+                            codecItem.setText("{}".format(song_info.audio_format))
                         else:
-                            codecItem.setText("{} ({})".format(audio_format,encoder))
+                            codecItem.setText("{} ({})".format(song_info.audio_format,song_info.encoder))
                 
-                    bitrateItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Bitrate"))
-                    bitrateItem.setText(song_info['bitrate'])
-                    try:
-                        frame_hist = song_info['frame_hist']
-                        bitrateItem.setData(dataBitrate,frame_hist)
-                    except KeyError:
-                        pass
-                        
-                    try:
-                        frequencyItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Frequency"))
-                        frequency = song_info['frequency']
-                        frequencyItem.setText(frequency)
-                    except KeyError:
-                        pass
-                        
-                    try:
-                        modeItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Mode"))
-                        mode = song_info['mode']
-                        modeItem.setText(mode)
-                    except KeyError:
-                        pass
+                    bitrateItem = self.ui.tableWidget.item(row, table_headers.index("Bitrate"))
+                    if song_info.bitrate is not None:
+                        bitrateItem.setText(song_info.bitrate)
 
-                    lengthItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Length"))
-                    lengthItem.setText(song_info['length'])
-                    filesizeItem = self.ui.tableWidget.item(row, headerIndexByName(self.ui.tableWidget,"Filesize"))
-                    filesizeItem.setText(song_info['filesize'])
+                    if song_info.frame_hist is not None:
+                        bitrateItem.setData(dataBitrate,song_info.frame_hist)
+                        
+                    frequencyItem = self.ui.tableWidget.item(row, table_headers.index("Frequency"))
+                    if song_info.frequency is not None:
+                        frequencyItem.setText(song_info.frequency)
+                        
+                    modeItem = self.ui.tableWidget.item(row, table_headers.index("Mode"))
+                    if song_info.mode is not None:
+                        modeItem.setText(song_info.mode)
+
+                    lengthItem = self.ui.tableWidget.item(row, table_headers.index("Length"))
+                    if song_info.length is not None:
+                        lengthItem.setText(song_info.length)
+                        
+                    filesizeItem = self.ui.tableWidget.item(row, table_headers.index("Filesize"))
+                    if song_info.filesize is not None:
+                        filesizeItem.setText(song_info.filesize)
 
                     if usecache:
                         filecache.setValue('{}/Encoder'.format(filemd5),codecItem.text())
@@ -1284,10 +899,10 @@ class Main(QMainWindow):
                         except KeyError:
                             filecache.remove('{}/FrameHist'.format(filemd5))
                         
-            elif result_type == "Error_Check":
+            elif song_info.result_type == "Error Check":
                 pass
             else: 
-                debug_log("Update_Table: Result type {} unknown".format(result_type))
+                debug_log("Update_Table: Result type {} unknown".format(song_info.result_type))
                     
     def updateMainGui(self):
         ''' runs from timer - takes results from main_q and adds to tablewidget '''
@@ -1312,21 +927,14 @@ class Main(QMainWindow):
                 q_info = None
                                 
             if q_info is not None:
-                try:
-                    row = q_info[0]
-                except Exception as e:
-                    debug_log("updateMainGui: q_info exception {}".format(e))
-                    row = -1
-                try:
-                    song_info = q_info[1]
-                except Exception as e:
-                    debug_log("updateMainGui: q_info exception {}".format(e))
-                    song_info = {}
-                    
+                if not isinstance(q_info, main_info):
+                    debug_log("updateMainGui received wrong data: {}".format(q_info))
+                    return
+                
                 if debug_enabled:
-                    debug_log("updateMainGui: calling update_Table for row {}".format(row))
+                    debug_log("updateMainGui: calling update_Table for row {}".format(q_info.row))
                 self.ui.tableWidget.setUpdatesEnabled(False)
-                self.update_Table(row,song_info)
+                self.update_Table(q_info.row,q_info.song_info)
                 self.ui.tableWidget.setUpdatesEnabled(True)
 
                 with QWriteLocker(ql):
@@ -1438,7 +1046,7 @@ class Main(QMainWindow):
                 if debug_enabled:
                     debug_log("Queuing process for file {}".format(filenameStr))
                     
-                thread = getScannerThread(i,filenameStr,mp3guessenc_bin,mediainfo_bin,False,cmd_timeout)
+                thread = getScannerThread(i,filenameStr,mp3guessenc_bin,mediainfo_bin,None,cmd_timeout)
                 if thread is not None:
                     thread_list.append(thread)
                     
@@ -1452,7 +1060,7 @@ class Main(QMainWindow):
                             thread_list.append(thread)
                     if settings.value('Options/ScanForErrors',True, type=bool):
                         if not flac_bin == "":
-                            thread = errorCheck_Thread(i,filenameStr,flac_bin,"-t",debug_enabled,cmd_timeout,main_q)
+                            thread = errorCheck_Thread(i,filenameStr,flac_bin,"-t",debug_enabled,cmd_timeout,main_q,True)
                             thread_list.append(thread)
                 elif fnmatch.fnmatch(filenameStr, "*.wav"):
                     if settings.value('Options/auCDtect_scan',False, type=bool):
@@ -1484,7 +1092,7 @@ class Main(QMainWindow):
         QMessageBox.about(self, "About",
                                 """Specton Audio Analyser v{}
                                 
-Copyright (C) 2016 D. Bird <somesortoferror@gmail.com>
+Copyright (C) 2016-17 David Bird <somesortoferror@gmail.com>
 https://github.com/somesortoferror/specton
 
 This program is free software: you can redistribute it and/or modify
@@ -1498,10 +1106,15 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.""".format(version)
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+Python version: {}
+
+""".format(version,sys.version)
                                 )
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     main = Main()
     main.show()
+    checkPrereq(main)
     sys.exit(app.exec_())

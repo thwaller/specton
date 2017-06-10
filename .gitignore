@@ -60,3 +60,20 @@ target/
 
 #Ipython Notebook
 .ipynb_checkpoints
+
+icons_unused/
+specton.build/
+release/
+scanners/
+tools/
+*.bat
+*.zip
+*.prof
+Specton Audio Analyser.nsi
+setup.py.cxfreeze
+setup.py.py2exe
+specton-windows.pdy
+untitled.ui
+x64/
+x86/
+

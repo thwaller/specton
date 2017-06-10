@@ -6,9 +6,9 @@ import re
 from appdirs.appdirs import AppDirs
 
 AppName = "Specton"
-version = 0.164
+version = 0.17
 
-app_dirs = AppDirs(AppName, False)
+app_dirs = AppDirs(AppName,"",roaming=True)
 
 dataScanned=32
 dataFilenameStr=33

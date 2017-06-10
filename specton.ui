@@ -273,6 +273,15 @@
     <string>Open Config Directory</string>
    </property>
   </action>
+  <action name="actionTools_Downloader">
+   <property name="icon">
+    <iconset>
+     <normaloff>icons/097-download.png</normaloff>icons/097-download.png</iconset>
+   </property>
+   <property name="text">
+    <string>Tools Downloader</string>
+   </property>
+  </action>
  </widget>
  <resources/>
  <connections/>

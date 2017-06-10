@@ -1,0 +1,58 @@
+{
+  "MediaInfo": {
+    "url": "http://cognito.me.uk/uploads/specton/x86/mediainfo.zip",
+    "install_dir": "tools/",
+    "category": "scanners",
+    "platform": "win_x86",
+    "description": "MediaInfo utility. Required for basic operation",
+    "required": true
+  },
+  "mp3guessenc": {
+    "url": "http://cognito.me.uk/uploads/specton/x86/mp3guessenc.zip",
+    "install_dir": "tools/",
+    "category": "scanners",
+    "platform": "win_x86",
+    "description": "MP3 codec detection tool. Optional but highly recommended",
+    "required": false
+  },
+  "SoX": {
+    "url": "http://cognito.me.uk/uploads/specton/x86/sox.zip",
+    "install_dir": "tools/sox/",
+    "category": "tools",
+    "platform": "win_x86",
+    "description": "SoX audio processing tool. Used to create spectrograms",
+    "required": false
+  },
+  "Gnuplot": {
+    "url": "http://cognito.me.uk/uploads/specton/x86/gnuplot.zip",
+    "install_dir": "tools/gnuplot/",
+    "category": "tools",
+    "platform": "win_x86",
+    "description": "Gnuplot graphing utility used for bitrate charts",
+    "required": false
+  },
+  "FFmpeg": {
+    "url": "http://cognito.me.uk/uploads/specton/x86/ffmpeg.zip",
+    "install_dir": "tools/ffmpeg/",
+    "category": "tools",
+    "platform": "win_x86",
+    "description": "FFmpeg multimedia framework. Required for bitrate charts",
+    "required": false
+  },
+  "auCDtect": {
+    "url": "http://cognito.me.uk/uploads/specton/x86/aucdtect.zip",
+    "install_dir": "tools/",
+    "category": "tools",
+    "platform": "win_x86",
+    "description": "auCDtect utility. Lossy->Lossless transcode detection",
+    "required": false
+  },
+  "Flac": {
+    "url": "http://cognito.me.uk/uploads/specton/x86/flac.zip",
+    "install_dir": "tools/",
+    "category": "decoders",
+    "platform": "win_x86",
+    "description": "Free Lossless Audio Codec. Allows checking of .flac files for decode errors",
+    "required": false
+  }
+}

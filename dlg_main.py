@@ -2,7 +2,7 @@
 
 # Form implementation generated from reading ui file 'specton.ui'
 #
-# Created by: PyQt5 UI code generator 5.5.1
+# Created by: PyQt5 UI code generator 5.8.1
 #
 # WARNING! All changes made in this file will be lost!
 
@@ -119,6 +119,11 @@ class Ui_MainWindow(object):
         self.actionViewConfigDir = QtWidgets.QAction(MainWindow)
         self.actionViewConfigDir.setIcon(icon3)
         self.actionViewConfigDir.setObjectName("actionViewConfigDir")
+        self.actionTools_Downloader = QtWidgets.QAction(MainWindow)
+        icon8 = QtGui.QIcon()
+        icon8.addPixmap(QtGui.QPixmap("icons/097-download.png"), QtGui.QIcon.Normal, QtGui.QIcon.Off)
+        self.actionTools_Downloader.setIcon(icon8)
+        self.actionTools_Downloader.setObjectName("actionTools_Downloader")
         self.toolBar.addAction(self.actionFolder_Select)
         self.toolBar.addSeparator()
         self.toolBar.addAction(self.actionScan_Files)
@@ -152,4 +157,15 @@ class Ui_MainWindow(object):
         self.actionViewLogDir.setToolTip(_translate("MainWindow", "Open Log Directory"))
         self.actionViewConfigDir.setText(_translate("MainWindow", "Config files"))
         self.actionViewConfigDir.setToolTip(_translate("MainWindow", "Open Config Directory"))
+        self.actionTools_Downloader.setText(_translate("MainWindow", "Tools Downloader"))
+
+
+if __name__ == "__main__":
+    import sys
+    app = QtWidgets.QApplication(sys.argv)
+    MainWindow = QtWidgets.QMainWindow()
+    ui = Ui_MainWindow()
+    ui.setupUi(MainWindow)
+    MainWindow.show()
+    sys.exit(app.exec_())
 
