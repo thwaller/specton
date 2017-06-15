@@ -8,6 +8,7 @@
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
+
 class Ui_FileInfoDialog(object):
     def setupUi(self, FileInfoDialog):
         FileInfoDialog.setObjectName("FileInfoDialog")
@@ -38,4 +39,3 @@ class Ui_FileInfoDialog(object):
     def retranslateUi(self, FileInfoDialog):
         _translate = QtCore.QCoreApplication.translate
         FileInfoDialog.setWindowTitle(_translate("FileInfoDialog", "Info"))
-

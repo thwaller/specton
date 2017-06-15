@@ -1,13 +1,32 @@
 # -*- coding: utf-8 -*-
 
-import os
+import os,fnmatch,json,logging
 from PyQt5.QtCore import QRunnable
 from spct_utils import debug_log, runCmd, getTempFileName
-from specton import parse_mp3guessenc_output, parse_aucdtect_output, parse_mediainfo_output
+from spct_parsers import parse_mp3guessenc_output, parse_aucdtect_output, parse_mediainfo_output
 from spct_defs import *
-from spct_parsers import *
 from spct_objects import infoobj,main_info,song_info_obj
-import json
+from spct_cfg import app_dirs
+
+def getScannerThread(i, filenameStr, mp3guessenc_bin, mediainfo_bin, fileinfo_dialog_update=None, cmd_timeout=300,debug_enabled=False,main_q=None,info_q=None):
+    threads = set()
+    if fnmatch.fnmatch(filenameStr, "*.mp3"):
+        # use mp3guessenc if available
+        if not mp3guessenc_bin == "":
+            threads.add(scanner_Thread(i, filenameStr, mp3guessenc_bin, "mp3guessenc", "-e", debug_enabled, info_q,
+                                    main_q, fileinfo_dialog_update, cmd_timeout))
+        elif not mediainfo_bin == "":  # always use mediainfo
+            threads.add(scanner_Thread(i, filenameStr, mediainfo_bin, "mediainfo", "-", debug_enabled, info_q, main_q,
+                                    fileinfo_dialog_update, cmd_timeout))
+
+    elif fnmatch.fnmatch(filenameStr, "*.flac") and not mediainfo_bin == "":
+        threads.add(scanner_Thread(i, filenameStr, mediainfo_bin, "mediainfo", "-", debug_enabled, info_q, main_q,
+                                fileinfo_dialog_update, cmd_timeout))
+    elif not mediainfo_bin == "":  # default for all files is mediainfo
+        threads.add(scanner_Thread(i, filenameStr, mediainfo_bin, "mediainfo", "-", debug_enabled, info_q, main_q,
+                                fileinfo_dialog_update, cmd_timeout))
+    return threads
+
 
 class scanner_Thread(QRunnable):
     def __init__(self,row,filenameStr,binary,scanner_name,options,debug_enabled,infodlg_q,main_q,fileinfo_dialog_update=None,cmd_timeout=300):
@@ -25,48 +44,43 @@ class scanner_Thread(QRunnable):
         
     def run(self):
         output_str = ""
-        if self.debug_enabled:
-            debug_log("scanner thread running for row {}, file: {}".format(self.row,self.filenameStr))
+        debug_log("scanner thread running for row {}, file: {}".format(self.row,self.filenameStr))
         
         if os.path.lexists(self.filenameStr): 
             try:
                 output_str,output_err = runCmd([self.binary,self.options,self.filenameStr],self.cmd_timeout)
             except Exception as e:
-                debug_log("Exception {} in runCmd {} for file {}".format(e,self.binary,self.filenameStr))
-                output_str = "Error"
+                debug_log("Exception {} in runCmd {} for file {}".format(e,self.binary,self.filenameStr),logging.ERROR)
+                output_str = "Error running command {}".format(self.binary)
         else:
-            output_str = "Error" # handle the case where file has been deleted while in queue e.g. temp files or user deletion
+            output_str = "Error: file {} not found".format(self.filenameStr) # handle the case where file has been deleted while in queue e.g. temp files or user deletion
                 
         if self.fileinfo_dialog_update is not None:
             info = infoobj("Scanner_Output",output_str,self.fileinfo_dialog_update,self.filenameStr)
             self.infodlg_q.put(info)
             return
 
-        if not (output_str == "Error"):
+        if not (output_str.startswith("Error")):
             if self.scanner_name == "mp3guessenc":
                 song_info = parse_mp3guessenc_output(output_str)
             elif self.scanner_name == "mediainfo":
                 song_info = parse_mediainfo_output(output_str)
             else: # unknown
-                debug_log("scanner thread finished but scanner {} unknown".format(self.scanner_name))
+                debug_log("scanner thread finished but scanner {} unknown".format(self.scanner_name),logging.WARNING)
                 return
-            if self.debug_enabled:
-                debug_log("{} scanner thread finished - row {}, result: {}".format(self.scanner_name,self.row,song_info.encoder))
+            debug_log("{} scanner thread finished - row {}, result: {}".format(self.scanner_name,self.row,song_info.encoder))
     
-            if self.debug_enabled:
-                debug_log("{} scanner thread posting to queue - row {}".format(self.scanner_name,self.row))
-            maininfo_obj = main_info("",output_str,self.row,song_info)
-            self.main_q.put(maininfo_obj)
-        else:
-            if self.debug_enabled:
-                debug_log("{} scanner thread posting to queue with error - row {}".format(self.scanner_name,self.row))
-            song_info = song_info_obj()
-            song_info.result_type = "Scanner_Output"
-            song_info.error = True
+            debug_log("{} scanner thread posting to queue - row {}".format(self.scanner_name,self.row))
             maininfo_obj = main_info("Scanner_Output",output_str,self.row,song_info)
             self.main_q.put(maininfo_obj)
-            if self.debug_enabled:
-                debug_log("{} scanner thread finished with error - row {}, result: {}".format(self.scanner_name,self.row,output_str))
+        else:
+            debug_log("{} scanner thread posting to queue with cmd error - row {}".format(self.scanner_name,self.row),logging.WARNING)
+            song_info = song_info_obj()
+            song_info.result_type = "Scanner_Output"
+            song_info.cmd_error = True
+            maininfo_obj = main_info("Scanner_Output",output_str,self.row,song_info)
+            self.main_q.put(maininfo_obj)
+            debug_log("{} scanner thread finished with cmd error - row {}, result: {}".format(self.scanner_name,self.row,output_str),logging.WARNING)
                 
 class aucdtect_Thread(QRunnable):
     ''' run aucdtect on a file and post results to queue '''
@@ -84,8 +98,7 @@ class aucdtect_Thread(QRunnable):
 
     def run(self):
         temp_file = ""
-        if self.debug_enabled:
-            debug_log("aucdtect thread started for row {}, file: {}".format(self.row,self.filenameStr))
+        debug_log("aucdtect thread started for row {}, file: {}".format(self.row,self.filenameStr))
         if os.path.lexists(self.filenameStr): 
             try:
                 temp_file = getTempFileName()
@@ -95,7 +108,7 @@ class aucdtect_Thread(QRunnable):
                 else:
                     output_str,output_err = runCmd([self.aucdtect_bin,self.aucdtect_options,self.filenameStr],self.cmd_timeout)
             except Exception as e:
-                debug_log("Exception {} in runCmd {} for file {}".format(e,self.aucdtect_bin,self.filenameStr))
+                debug_log("Exception {} in runCmd {} for file {}".format(e,self.aucdtect_bin,self.filenameStr),logging.ERROR)
                 output_str = "Error"
         else:
             output_str = "Error"
@@ -108,19 +121,17 @@ class aucdtect_Thread(QRunnable):
         if not (output_str == "Error"):
             song_info = parse_aucdtect_output(output_str)
 
-            if self.debug_enabled:
-                debug_log("aucdtect thread finished - row {}, result: {}".format(self.row,song_info.quality))
+            debug_log("aucdtect thread finished - row {}, result: {}".format(self.row,song_info.quality))
     
-            maininfo_obj = main_info("",output_str,self.row,song_info)
+            maininfo_obj = main_info("Scanner_Output",output_str,self.row,song_info)
             self.main_q.put(maininfo_obj)
         else:
             song_info = song_info_obj()
             song_info.result_type = "Scanner_Output"
-            song_info.error = True
+            song_info.cmd_error = True
             maininfo_obj = main_info("Scanner_Output",output_str,self.row,song_info)
             self.main_q.put(maininfo_obj)
-            if self.debug_enabled:
-                debug_log("aucdtect thread finished with error - row {}, result: {}".format(self.row,output_str))
+            debug_log("aucdtect thread finished with cmd error - row {}, result: {}".format(self.row,output_str),logging.WARNING)
 
 class errorCheck_Thread(QRunnable):
     ''' test file for decode errors and post results to queue '''
@@ -137,22 +148,20 @@ class errorCheck_Thread(QRunnable):
 
     def run(self):
         try:
-            if self.debug_enabled:
-                debug_log("error check thread started for row {}, file: {}".format(self.row,self.filenameStr))
+            debug_log("error check thread started for row {}, file: {}".format(self.row,self.filenameStr))
             if os.path.lexists(self.filenameStr): 
                 try:
                     cmd = [self.decoder_bin,self.decoder_options,self.filenameStr]
                     debug_log("cmd: {}".format(cmd))
                     output_str,output_err = runCmd(cmd,self.cmd_timeout)
                 except Exception as e:
-                    debug_log("Exception {} in runCmd {} for file {}".format(e,self.decoder_bin,self.filenameStr))
+                    debug_log("Exception {} in runCmd {} for file {}".format(e,self.decoder_bin,self.filenameStr),logging.ERROR)
                     output_str = "Error"
                     output_err = "Error"
             else:
                 output_str = "Error"
                 output_err = "Error"
-                if self.debug_enabled:
-                    debug_log("error check thread file: {} does not exist".format(self.filenameStr))
+                debug_log("error check thread file: {} does not exist".format(self.filenameStr),logging.WARNING)
                             
             if self.use_stderr: # flac writes everything to stderr
                 check_str = output_err
@@ -162,21 +171,22 @@ class errorCheck_Thread(QRunnable):
             if (check_str == "Error") or ("ERROR while decoding" in check_str): 
                 song_info = song_info_obj()
                 song_info.result_type = "Error_Check"
-                song_info.error = True
+                if check_str == "Error":
+                    song_info.cmd_error = True
+                else:
+                    song_info.file_error = True
                 maininfo_obj = main_info("Error_Check",check_str,self.row,song_info)
                 self.main_q.put(maininfo_obj)
-                if self.debug_enabled:
-                    debug_log("error check thread finished with error - row {}, result: {}".format(self.row,check_str))
+                debug_log("error check thread finished with error - row {}, result: {}".format(self.row,check_str),logging.WARNING)
             else:
                 song_info = song_info_obj()
                 song_info.result_type = "Error_Check"
-                song_info.error = False
+                song_info.file_error = False
                 maininfo_obj = main_info("Error_Check",check_str,self.row,song_info)
                 self.main_q.put(maininfo_obj)
-                if self.debug_enabled:
-                    debug_log("error check thread finished - row {}, result: {}".format(self.row,check_str))
+                debug_log("error check thread finished - row {}, result: {}".format(self.row,check_str))
         except Exception as e:
-            debug_log(e)
+            debug_log(e,logging.ERROR)
             
 class makeBitGraphThread(QRunnable):
     ''' generate bitrate graph using ffprobe/avprobe 
@@ -196,7 +206,7 @@ class makeBitGraphThread(QRunnable):
         try:
             output_str,output_err = runCmd([self.ffprobe_bin,"-show_packets","-of","json",self.fn],self.cmd_timeout)
         except Exception as e:
-            debug_log(e)
+            debug_log(e,logging.ERROR)
             return None
     
         x_list = []
@@ -206,22 +216,22 @@ class makeBitGraphThread(QRunnable):
             json_packet_data = json.loads(output_str)
             packets = json_packet_data["packets"]
         except Exception as e:
-            debug_log("Exception in makeBitGraphThread: {}".format(e))
+            debug_log("Exception in makeBitGraphThread: {}".format(e),logging.ERROR)
             return None
     
-        for dict in packets:
-            if not dict["codec_type"] == "audio":
+        for dictionary in packets:
+            if not dictionary["codec_type"] == "audio":
                 continue
             try:
-                x = float(dict["pts_time"]) # time
+                x = float(dictionary["pts_time"]) # time
             except (KeyError, ValueError, OverflowError) as e:
                 x = 0
             try:
-                t = float(dict["duration_time"]) # duration
+                t = float(dictionary["duration_time"]) # duration
             except (KeyError, ValueError, OverflowError) as e:
                 t = 0
             try:
-                sz = float(dict["size"]) # size in bytes
+                sz = float(dictionary["size"]) # size in bytes
             except (KeyError, ValueError, OverflowError) as e:
                 sz = 0
             try:
@@ -265,7 +275,7 @@ class makeBitGraphThread(QRunnable):
             debug_log("running {} with cmdfile {}".format(self.gnuplot_bin,cmdfile))
             output_str,output_err = runCmd([self.gnuplot_bin,"{}".format(cmdfile)],self.cmd_timeout)
         except Exception as e:
-            debug_log(e)
+            debug_log(e,logging.ERROR)
             return None
             
         try:
@@ -325,7 +335,7 @@ class makeBitHistThread(QRunnable):
             debug_log(output_str)
             debug_log(output_err)
         except Exception as e:
-            debug_log(e)
+            debug_log(e,logging.ERROR)
             return None
             
         try:
@@ -352,11 +362,11 @@ class makeSpectrogramThread(QRunnable):
         try:
             sox_output,output_err = runCmd([self.sox_bin,self.fn,"-n","spectrogram","-l","-p{}".format(self.palette),"-c ","-o",self.temp_file],self.cmd_timeout)
         except Exception as e:
-            debug_log(e)
+            debug_log(e,logging.ERROR)
             self.temp_file = ""
         if not self.temp_file == "":
             try:
                 info = infoobj("Spectrogram",self.temp_file,self.grid,self.fn)
                 self.infodlg_q.put(info) # Timer watches this queue and updates gui
             except Exception as e:
-                debug_log(e)               
+                debug_log(e,logging.ERROR)               

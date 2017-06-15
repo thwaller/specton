@@ -8,6 +8,7 @@
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
+
 class Ui_DownloaderDlg(object):
     def setupUi(self, DownloaderDlg):
         DownloaderDlg.setObjectName("DownloaderDlg")
@@ -20,7 +21,7 @@ class Ui_DownloaderDlg(object):
         self.downloads_buttonBox = QtWidgets.QDialogButtonBox(DownloaderDlg)
         self.downloads_buttonBox.setGeometry(QtCore.QRect(350, 400, 161, 32))
         self.downloads_buttonBox.setOrientation(QtCore.Qt.Horizontal)
-        self.downloads_buttonBox.setStandardButtons(QtWidgets.QDialogButtonBox.Close|QtWidgets.QDialogButtonBox.Ok)
+        self.downloads_buttonBox.setStandardButtons(QtWidgets.QDialogButtonBox.Close | QtWidgets.QDialogButtonBox.Ok)
         self.downloads_buttonBox.setCenterButtons(False)
         self.downloads_buttonBox.setObjectName("downloads_buttonBox")
         self.downloads_treeWidget = QtWidgets.QTreeWidget(DownloaderDlg)
@@ -44,10 +45,10 @@ class Ui_DownloaderDlg(object):
 
 if __name__ == "__main__":
     import sys
+
     app = QtWidgets.QApplication(sys.argv)
     DownloaderDlg = QtWidgets.QDialog()
     ui = Ui_DownloaderDlg()
     ui.setupUi(DownloaderDlg)
     DownloaderDlg.show()
     sys.exit(app.exec_())
-

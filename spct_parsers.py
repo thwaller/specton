@@ -3,7 +3,7 @@
 import string
 from spct_defs import *
 from spct_objects import infoobj,main_info,song_info_obj
-from spct_utils import format_bytes
+from spct_utils import format_bytes, debug_log
 
 def doMP3Checks(bitrate,encoder,encoder_string,mp3guessenc_output):
     ''' do some MP3 quality checks '''
@@ -27,13 +27,13 @@ def doMP3Checks(bitrate,encoder,encoder_string,mp3guessenc_output):
         search = mp3_lame_tag_preset_regex.search(mp3guessenc_output)
         if search is not None:
             preset = search.group(1).strip()
-            if (preset[0:2] in ["V0","V1","V2","V3"]):
+            if preset[0:2] in ["V0", "V1", "V2", "V3"]:
                 colour = colourQualityGood
                 return preset, colour
             elif preset in ["256 kbps","320 kbps","Standard.","Extreme.","Insane."]: 
                 colour = colourQualityGood                
                 return "--preset {}".format(preset.lower().strip(".")), colour
-            elif ((preset in ["160", "192"]) or (preset[0:2] in ["V4","V5","V6"])):
+            elif (preset in ["160", "192"]) or (preset[0:2] in ["V4", "V5", "V6"]):
                 colour = colourQualityOk
                 return preset, colour
                 
@@ -41,15 +41,15 @@ def doMP3Checks(bitrate,encoder,encoder_string,mp3guessenc_output):
         if search is not None:
             try:
                 quality = int(search.group(1))
-            except:
+            except ValueError:
                 quality = 0
             try:
                 q = int(search.group(2))
-            except:
+            except ValueError:
                 q = 999
             try:
                 V = int(search.group(3))
-            except:
+            except ValueError:
                 V = 999
             if quality <= 50:
                 colour = colourQualityWarning
@@ -59,7 +59,7 @@ def doMP3Checks(bitrate,encoder,encoder_string,mp3guessenc_output):
                 colour = colourQualityOk
             elif V < 999:
                 colour = colourQualityWarning
-            if q >= 7 and q < 999:
+            if 7 <= q < 999:
                 colour = colourQualityWarning
             if q < 999 and V < 999:
                 text = "-q{} -V{}".format(q,V)
@@ -89,10 +89,9 @@ def parse_mp3guessenc_output(mp3guessenc_output):
     si = song_info_obj()
     si.result_type = "mp3guessenc"
     si.audio_format = "MP3"
-    si.error = False
     
     if "Cannot find valid mpeg header" in mp3guessenc_output:
-        si.error = True
+        si.file_error = True
         si.audio_format = "MP3?"
         return si
     
@@ -111,6 +110,9 @@ def parse_mp3guessenc_output(mp3guessenc_output):
     search = guessenc_bitrate_regex.search(mp3guessenc_output)
     if search is not None:
         si.bitrate=search.group(1)
+    search = guessenc_artist_regex.search(mp3guessenc_output)
+    if search is not None:
+        si.artist=search.group(1).rstrip('.\r')
     search = guessenc_length_regex.search(mp3guessenc_output)
     if search is not None:
         length=search.group(1)
@@ -146,7 +148,7 @@ def parse_mp3guessenc_output(mp3guessenc_output):
             bitrate_mode = "VBR"
         elif len(si.frame_hist[0]) == 1:
             bitrate_mode = "CBR"
-    except:
+    except IndexError:
         bitrate_mode = ""
         
     if (not mode == "") and (not bitrate_mode == ""):
@@ -173,25 +175,28 @@ def parse_mp3guessenc_output(mp3guessenc_output):
     return si
 
 def parse_mediainfo_output(mediainfo_output):
-    encoder=""
     bitrate=""
-    encoder_string=""
     length=""
-    filesize=""
-    audio_format="Unknown"
     frequency=""
     bit_depth=""
     bitrate_mode=""
     mode=""
     format_mode=""
+    
+    si = song_info_obj()
+    si.result_type = "mediainfo"
 
     search = mediainfo_encoder_regex.search(mediainfo_output)
     if search is not None:
-        encoder=search.group(1)
+        si.encoder=search.group(1)
+        
+    search = mediainfo_artist_regex.search(mediainfo_output)
+    if search is not None:
+        si.artist=search.group(1)
 
     search = mediainfo_format_regex.search(mediainfo_output)
     if search is not None:
-        audio_format=search.group(1)
+        si.audio_format=search.group(1)
 
     search = mediainfo_length_regex.search(mediainfo_output)
     if search is not None:
@@ -203,7 +208,7 @@ def parse_mediainfo_output(mediainfo_output):
 
     search = mediainfo_filesize_regex.search(mediainfo_output)
     if search is not None:
-        filesize=search.group(1)
+        si.filesize=search.group(1)
         
     search = mediainfo_bitrate_mode_regex.search(mediainfo_output)
     if search is not None:
@@ -245,17 +250,11 @@ def parse_mediainfo_output(mediainfo_output):
         br = br.replace("kb/s"," kbps")
         return br
 
-    si = song_info_obj()
-    si.result_type = "mediainfo"
-    si.encoder = encoder
-    si.audio_format = audio_format
     si.bitrate = formatMediaInfoBitrate(bitrate)
-    si.encoderstring = encoder_string
     si.length = length.replace(" min","m")
     si.mode = format_mode
     si.frequency = frequency
-    si.filesize = filesize
-    si.error = False
+    si.file_error = False
     
     return si
 
@@ -295,6 +294,6 @@ def parse_aucdtect_output(aucdtect_output):
     else:
         si.quality = detection
     
-    si.error = False
+    si.file_error = False
 
     return si

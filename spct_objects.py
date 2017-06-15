@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 
 class infoobj(object):
-    def __init__(self, type="", data=None, layout=None, fn=""):
-        self.type = type
+    def __init__(self, info_type="", data=None, layout=None, fn=""):
+        self.type = info_type
         self.data = data
         self.layout = layout
         self.fn = fn
@@ -17,7 +17,9 @@ class main_info(object):
 class song_info_obj(object):
     def __init__(self):
         self.result_type = None
-        self.error = False
+        self.cmd_error = False
+        self.file_error = False
+        self.artist = ""
         self.quality = None
         self.quality_colour = None
         self.encoder = ""
