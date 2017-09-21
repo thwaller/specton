@@ -87,7 +87,7 @@ class OptionsDialog(QDialog):
             exe_name = "aucdtect"
         if lineEdit is not None:
             path = lineEdit.text()
-            file = str(QFileDialog.getOpenFileName(parent=self, caption="Browse to {} executable file".format(exe_name),
+            file = str(QFileDialog.getOpenFileName(parent=self, caption=self.tr("Browse to")+" {} ".format(exe_name)+self.tr("executable file"),
                                                    directory=path)[0])
             if not file == "":
                 lineEdit.setText(file)

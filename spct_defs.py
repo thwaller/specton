@@ -14,6 +14,9 @@ dataBitrate = 35
 
 aucdtect_confidence_threshold = 90  # aucdtect results considered accurate when probability is higher than this
 
+LossyFormats=(".mp3",".opus",".mpc",".ogg",".m4a",".aac",".ac3",".ra",".au")
+LosslessFormats=(".flac",".wav",".shn",".ape",".tta",".wv")
+
 # define some colours
 colourQualityUnknown = QColor(Qt.lightGray)
 colourQualityUnknown.setAlpha(100)
@@ -26,7 +29,7 @@ colourQualityWarning.setAlpha(100)
 colourQualityBad = QColor(Qt.red)
 colourQualityBad.setAlpha(100)
 
-defaultfilemask = r"\.(mp3|opus|flac|mpc|ogg|wav|m4a|aac|ac3|ra|au)$"
+defaultfilemask = r"\.(mp3|opus|flac|mpc|ogg|wav|m4a|aac|ac3|ra|au|shn|ape|tta|wv)$"
 
 guessenc_encoder_regex = re.compile(r"^Maybe this file is encoded by (.*)", re.MULTILINE)
 guessenc_encoder_string_regex = re.compile(r"^Encoder string \: (.*)", re.MULTILINE)

@@ -5,64 +5,105 @@ from spct_defs import *
 from spct_objects import infoobj,main_info,song_info_obj
 from spct_utils import format_bytes, debug_log
 
-def doMP3Checks(bitrate,encoder,encoder_string,mp3guessenc_output):
+def doQualityChecks(bitrate,audio_format,encoder):
+#    debug_log("doQualityChecks: {},{},{}".format(bitrate,audio_format,encoder))
+
+    colour = colourQualityUnknown
+    text = None
+    bitrate_min = None
+    try:
+        bitrate_int = float(bitrate.split()[0])
+    except (IndexError,ValueError):
+        bitrate_int = None
+    
+    if audio_format.startswith("Musepack"):
+        bitrate_min = 100
+        bitrate_good = 160
+    elif audio_format.startswith("Vorbis"):
+        bitrate_min = 80
+        bitrate_good = 150
+    elif audio_format.startswith("AAC"):
+        bitrate_min = 80
+        bitrate_good = 150
+    elif audio_format.startswith("Opus"):
+        bitrate_min = 40
+        bitrate_good = 128
+
+    if not bitrate_min or not bitrate_int:
+        return text, colour
+        
+    if bitrate_int > bitrate_good:
+        colour = colourQualityGood
+    elif bitrate_int < bitrate_min:
+        colour = colourQualityBad
+    else:
+        colour = colourQualityOk
+    
+    return text, colour
+
+def doMP3QualityChecks(bitrate,encoder,encoder_string,lame_preset,quality=-1,q=-1,V=-1):
     ''' do some MP3 quality checks '''
     colour = colourQualityUnknown
     text = None
+    try:
+        bitrate_int = float(bitrate.split()[0])
+    except (IndexError,ValueError):
+        bitrate_int = None
+    
+    if not bitrate_int:
+        return text,colour
                    
     if encoder.startswith("FhG"):
-        bitrate_int = float(bitrate.split()[0])
-        if bitrate_int > 300:
-            colour = colourQualityGood
-    elif encoder.startswith("Xing (old)") or encoder.startswith("BladeEnc") or encoder.startswith("dist10"):
-        colour = colourQualityWarning
-    elif encoder_string.upper().startswith("LAME"):
-        bitrate_int = float(bitrate.split()[0])
+        if bitrate_int >= 200:
+            colour = colourQualityOk
+        elif bitrate_int < 128:
+            colour = colourQualityBad
+        else:
+            colour = colourQualityWarning
         
+    elif encoder.startswith("Xing (old)") or encoder.startswith("BladeEnc") or encoder.startswith("dist10"):
+        if bitrate_int < 160:
+            colour = colourQualityBad
+        else:
+            colour = colourQualityWarning
+
+    elif encoder.startswith("Xing (new)") or encoder.startswith("Helix"):
+        if bitrate_int < 128:
+            colour = colourQualityBad
+        elif bitrate_int > 200:
+                colour = colourQualityOk
+        else:
+            colour = colourQualityWarning
+
+    elif encoder_string.upper().startswith("LAME"):        
         if bitrate_int > 300:
             colour = colourQualityGood # default if no lame tag
         elif bitrate_int > 170:
             colour = colourQualityOk
             
-        search = mp3_lame_tag_preset_regex.search(mp3guessenc_output)
-        if search is not None:
-            preset = search.group(1).strip()
-            if preset[0:2] in ["V0", "V1", "V2", "V3"]:
+        if lame_preset:
+            if lame_preset[0:2] in ["V0", "V1", "V2", "V3"]:
                 colour = colourQualityGood
-                return preset, colour
-            elif preset in ["256 kbps","320 kbps","Standard.","Extreme.","Insane."]: 
+                return lame_preset, colour
+            elif lame_preset in ["256 kbps","320 kbps","Standard.","Extreme.","Insane."]: 
                 colour = colourQualityGood                
-                return "--preset {}".format(preset.lower().strip(".")), colour
-            elif (preset in ["160", "192"]) or (preset[0:2] in ["V4", "V5", "V6"]):
+                return "--preset {}".format(lame_preset.lower().strip(".")), colour
+            elif (lame_preset in ["160", "192"]) or (lame_preset[0:2] in ["V4", "V5", "V6"]):
                 colour = colourQualityOk
-                return preset, colour
+                return lame_preset, colour
                 
-        search = mp3_xing_quality_regex.search(mp3guessenc_output)
-        if search is not None:
-            try:
-                quality = int(search.group(1))
-            except ValueError:
-                quality = 0
-            try:
-                q = int(search.group(2))
-            except ValueError:
-                q = 999
-            try:
-                V = int(search.group(3))
-            except ValueError:
-                V = 999
-            if quality <= 50:
-                colour = colourQualityWarning
-            elif V <= 3:
-                colour = colourQualityGood
-            elif V <= 6:
-                colour = colourQualityOk
-            elif V < 999:
-                colour = colourQualityWarning
-            if 7 <= q < 999:
-                colour = colourQualityWarning
-            if q < 999 and V < 999:
-                text = "-q{} -V{}".format(q,V)
+        if quality <= 50:
+            colour = colourQualityWarning
+        if V > 6:
+            colour = colourQualityWarning
+        elif V >= 4:
+            colour = colourQualityOk            
+        elif V >= 0:
+            colour = colourQualityGood
+        if q > 6:
+            colour = colourQualityWarning
+        if q > -1 and V > -1:
+            text = "-q{} -V{}".format(q,V)
                 
     return text, colour
 
@@ -87,7 +128,7 @@ def get_bitrate_hist_data(frame_hist):
 def parse_mp3guessenc_output(mp3guessenc_output):
     ''' parse mp3guessenc output using regex - return parsed variables as song_info_obj '''
     si = song_info_obj()
-    si.result_type = "mp3guessenc"
+    si.result_type = song_info_obj.MP3GUESSENC
     si.audio_format = "MP3"
     
     if "Cannot find valid mpeg header" in mp3guessenc_output:
@@ -168,8 +209,31 @@ def parse_mp3guessenc_output(mp3guessenc_output):
             return "{}m {}s".format((hours*60)+minutes,round(seconds))
         else:
             return length
-                
-    si.quality, si.quality_colour = doMP3Checks(si.bitrate,si.encoder,si.encoderstring,mp3guessenc_output)
+            
+    search = mp3_lame_tag_preset_regex.search(mp3guessenc_output)
+    lame_preset = ""
+    if search is not None:
+        lame_preset = search.group(1).strip()
+
+    search = mp3_xing_quality_regex.search(mp3guessenc_output)
+    quality = -1
+    q = -1
+    V = -1
+    if search is not None:
+        try:
+            quality = int(search.group(1))
+        except ValueError:
+            quality = -1
+        try:
+            q = int(search.group(2))
+        except ValueError:
+            q = -1
+        try:
+            V = int(search.group(3))
+        except ValueError:
+            V = -1
+
+    si.quality, si.quality_colour = doMP3QualityChecks(si.bitrate,si.encoder,si.encoderstring,lame_preset,quality,q,V)
     si.length = formatMP3GuessEncDate(length)
     
     return si
@@ -184,7 +248,7 @@ def parse_mediainfo_output(mediainfo_output):
     format_mode=""
     
     si = song_info_obj()
-    si.result_type = "mediainfo"
+    si.result_type = song_info_obj.MEDIAINFO
 
     search = mediainfo_encoder_regex.search(mediainfo_output)
     if search is not None:
@@ -255,12 +319,13 @@ def parse_mediainfo_output(mediainfo_output):
     si.mode = format_mode
     si.frequency = frequency
     si.file_error = False
+    si.quality, si.quality_colour = doQualityChecks(si.bitrate,si.audio_format,si.encoder)
     
     return si
 
 def parse_aucdtect_output(aucdtect_output):
     si = song_info_obj()
-    si.result_type = "aucdtect"
+    si.result_type = song_info_obj.AUCDTECT
 
     detection = ""
     probability = ""

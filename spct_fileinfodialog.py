@@ -17,7 +17,7 @@ class FileInfo(QDialog):
         super(FileInfo, self).__init__()
         self.ui = Ui_FileInfoDialog()
         self.ui.setupUi(self)
-        self.setWindowTitle("Info - {}".format(os.path.basename(filenameStr)))
+        self.setWindowTitle(self.tr("Info") + " - {}".format(os.path.basename(filenameStr)))
         self.filename = filenameStr
         self.frame_hist = frame_hist  # tuple
         self.infodlg_q = queue.Queue()
@@ -38,9 +38,9 @@ class FileInfo(QDialog):
             x = []
             y = []
 
-        debug_log("Frame histogram - {}".format(self.frame_hist))
-        debug_log("Frame histogram - {}".format(x))
-        debug_log("Frame histogram - {}".format(y))
+        debug_log("Frame histogram - {}".format(self.frame_hist),logging.DEBUG)
+        debug_log("Frame histogram - {}".format(x),logging.DEBUG)
+        debug_log("Frame histogram - {}".format(y),logging.DEBUG)
             
         if len(x) > 0:
             try:
@@ -49,7 +49,7 @@ class FileInfo(QDialog):
                 tab = QWidget()
                 grid = QGridLayout(tab)
                 grid.setObjectName("BitrateHistLayout-{}".format(md5Str(filenameStr)))
-                tabWidget.addTab(tab, "Bitrate Distribution")
+                tabWidget.addTab(tab, self.tr("Bitrate Distribution"))
 
                 thread = makeBitHistThread(filenameStr, grid.objectName(),
                                            settings.value("Options/Proc_Timeout", 300, type=int), self.infodlg_q,
@@ -69,7 +69,7 @@ class FileInfo(QDialog):
         tab = QWidget()
         grid = QGridLayout(tab)
         grid.setObjectName("OutputLayout-{}".format(md5Str(filenameStr)))
-        tabWidget.addTab(tab, "Scanner Output")
+        tabWidget.addTab(tab, self.tr("Scanner Output"))
 
         mp3guessenc_bin = findGuessEncBin()
         if (mp3guessenc_bin == "") or (not os.path.exists(mp3guessenc_bin)):
@@ -92,7 +92,7 @@ class FileInfo(QDialog):
             tab = QWidget()
             grid = QGridLayout(tab)
             grid.setObjectName("SpectrogramLayout-{}".format(md5Str(filenameStr)))
-            tabWidget.addTab(tab, "Spectrogram")
+            tabWidget.addTab(tab, self.tr("Spectrogram"))
 
             sox_bin = findSoxBin()
             temp_file = getTempFileName() + ".png"
@@ -108,7 +108,7 @@ class FileInfo(QDialog):
             tab = QWidget()
             grid = QGridLayout(tab)
             grid.setObjectName("BitgraphLayout-{}".format(md5Str(filenameStr)))
-            tabWidget.addTab(tab, "Bitrate Graph")
+            tabWidget.addTab(tab, self.tr("Bitrate Graph"))
             debug_log("Running ffprobe to create bitrate graph for file {}".format(filenameStr))
             thread = makeBitGraphThread(filenameStr, grid.objectName(), findffprobeBin(),
                                         settings.value("Options/Proc_Timeout", 300, type=int), self.infodlg_q,
@@ -129,8 +129,8 @@ class FileInfo(QDialog):
                 debug_log("updateGui received wrong data: {}".format(update_info),logging.WARNING)
                 return
                 
-            if update_info.type in ["Spectrogram", "BitGraph", "BitHist"]:
-                debug_log("updateGui received {} update".format(update_info.type))
+            if update_info.type in [infoobj.BITGRAPH, infoobj.BITHIST, infoobj.SPECTROGRAM]:
+                debug_log("updateGui received type {} update".format(update_info.type))
                 px = QLabel()
                 dlg = findDlg(update_info.fn,self.debug_enabled,self.infodlg_list)
                 if dlg is not None:
@@ -151,7 +151,7 @@ class FileInfo(QDialog):
                 except OSError:
                     pass
 
-            elif update_info.type == "Scanner_Output":
+            elif update_info.type == infoobj.SCANNER_OUTPUT:
                 debug_log("updateGui received Scanner_Output update")
                 if update_info.layout is not None:
                     textEdit_scanner = QTextEdit()

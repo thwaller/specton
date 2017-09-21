@@ -27,13 +27,14 @@ import queue
 import subprocess
 import sys
 from functools import partial
+from collections import deque
 from io import TextIOWrapper
 from time import asctime, gmtime, strftime, time
 
 from PyQt5.QtCore import QTimer, QThreadPool, QRunnable, QReadLocker, QWriteLocker, \
-    QReadWriteLock, QEvent
+    QReadWriteLock, QEvent, QTranslator, QLocale
 from PyQt5.QtWidgets import QApplication, QMainWindow, QAction, QFileDialog, \
-    QTableWidgetItem, QMessageBox, QMenu, QPushButton
+    QTableWidgetItem, QMessageBox, QMenu, QPushButton, QPlainTextEdit
 
 import spct_cfg as cfg
 from dlg_main import Ui_MainWindow
@@ -61,6 +62,7 @@ if os.name == 'nt':  # various hacks
 
     if not frozen:
         if sys.stdout is not None:
+            pass
             sys.stdout = TextIOWrapper(sys.stdout.buffer, sys.stdout.encoding,
                                        'backslashreplace')  # fix for printing utf8 strings on windows
         else:
@@ -92,7 +94,7 @@ def getTableHeaders(table):
 def checkPrereq(self):
     mi_bin = findMediaInfoBin()
     if not os.path.exists(mi_bin):
-        if not os.name == 'nt': pass  # downloader currently only implemented for windows
+        if not os.name == 'nt': return  # downloader currently only implemented for windows
         msg = QMessageBox()
         msg.setIcon(QMessageBox.Question)
         msg.setText("Some required tools are not found. Do you want to download them now?")
@@ -121,38 +123,61 @@ class Main(QMainWindow):
         self.task_count = 0
         self.task_total = 0
         self.scan_start_time = time()
-
+        
+        self.filterTimer = QTimer(self)
+        self.recentFiles = deque([],cfg.maxMRU)
+        
         self.ui.actionExit.triggered.connect(sys.exit)
-        self.ui.actionExit.setText("E&xit")
+        self.ui.actionExit.setText(self.tr("E&xit"))
         self.ui.actionScan_Files.triggered.connect(self.scan_Files)
-        self.ui.actionFolder_Select.triggered.connect(self.select_folder_click)
+        self.ui.actionFolder_Select.triggered.connect(self.select_folder_click)        
+        
         scanButton = self.findChild(QPushButton, "scanButton")
         scanButton.clicked.connect(self.ui.actionScan_Files.trigger)
         scanButton.setIcon(self.ui.actionScan_Files.icon())
-        self.ui.actionFolder_Select.setText("Select F&older")
+        self.ui.actionFolder_Select.setText(self.tr("Select F&older"))
         self.ui.actionClear_Filelist.triggered.connect(self.clear_List)
         self.ui.actionStop.triggered.connect(self.cancel_Tasks)
         self.ui.actionOptions.triggered.connect(self.edit_Options)
-        self.ui.actionOptions.setText("&Options")
+        self.ui.actionOptions.setText(self.tr("&Options"))
         self.ui.actionAbout.triggered.connect(self.about_Dlg)
-        self.ui.actionAbout.setText("&About")
+        self.ui.actionAbout.setText(self.tr("&About"))
         self.ui.actionViewConfigDir.triggered.connect(self.viewConfigDir)
-        self.ui.actionViewConfigDir.setText("&Config files")
+        self.ui.actionViewConfigDir.setText(self.tr("&Config files"))
         self.ui.actionViewLogDir.triggered.connect(self.viewLogDir)
-        self.ui.actionViewLogDir.setText("&Logs")
-        self.ui.actionTools_Downloader.setText("&Tools downloader")
+        self.ui.actionViewLogDir.setText(self.tr("&Logs"))
+        self.ui.actionTools_Downloader.setText(self.tr("&Tools downloader"))
         self.ui.actionTools_Downloader.triggered.connect(self.tools_downloader)
+        
+        self.recentFiles = cfg.settings.value("State/MRU",[]) # todo add favourites
+        if not self.recentFiles:
+            self.recentFiles = deque([],cfg.maxMRU)
 
-        fileMenu = self.ui.menubar.addMenu('&File')
+        fileMenu = self.ui.menubar.addMenu(self.tr('&File'))
         fileMenu.addAction(self.ui.actionFolder_Select)
+        self.mruMenu = fileMenu.addMenu(self.tr("&Recent Folders"))
+        self.mruMenuUpdate()
         fileMenu.addAction(self.ui.actionExit)
-        editMenu = self.ui.menubar.addMenu('&Edit')
+        editMenu = self.ui.menubar.addMenu(self.tr('&Edit'))
         editMenu.addAction(self.ui.actionOptions)
-        viewMenu = self.ui.menubar.addMenu('&View')
+        viewMenu = self.ui.menubar.addMenu(self.tr('&View'))
         viewMenu.addAction(self.ui.actionViewConfigDir)
         viewMenu.addAction(self.ui.actionViewLogDir)
         viewMenu.addAction(self.ui.actionTools_Downloader)
-        helpMenu = self.ui.menubar.addMenu('&Help')
+        languageMenu = self.ui.menubar.addMenu(self.tr('&Language'))
+        
+        for fn in os.listdir("./i18n"):
+            if fn.endswith(".qm"):
+                match = re.search("_(.*)\.",os.path.basename(fn))
+                if match:
+                    lang_name = match.group(1)
+                    lang_action = languageMenu.addAction(lang_name)
+                    lang_action.triggered.connect(partial(self.langClick, languageMenu, lang_name))
+                    lang_action.setCheckable(True)
+                    if lang_name == QLocale.system().name():
+                        lang_action.setChecked(True)
+            
+        helpMenu = self.ui.menubar.addMenu(self.tr('&Help'))
         helpMenu.addAction(self.ui.actionAbout)
 
         self.ui.tableWidget.setColumnCount(len(TableHeaders))
@@ -168,7 +193,7 @@ class Main(QMainWindow):
         windowGeometry = cfg.settings.value("State/windowGeometry")
         tableGeometry = cfg.settings.value("State/tableGeometry")
         tableHeaderState = cfg.settings.value("State/tableHeaderState")
-
+        
         if windowState is not None:
             self.restoreState(windowState)
         if windowGeometry is not None:
@@ -179,6 +204,11 @@ class Main(QMainWindow):
             self.ui.tableWidget.horizontalHeader().restoreState(tableHeaderState)
             self.ui.tableWidget.sortByColumn(-1, Qt.AscendingOrder)
 
+        self.ui.filterBox.textChanged.connect(self.filterBoxChanged)
+        self.ui.filter_comboBox.currentIndexChanged.connect(self.filterBoxChanged)
+        self.filterTimer.setSingleShot(True)
+        self.filterTimer.timeout.connect(self.doFilterTable)
+            
         updateMainGuiTimer = QTimer(self)  # this timer watches main_q and updates tablewidget with scanner results
         updateMainGuiTimer.timeout.connect(self.updateMainGui)
         updateMainGuiTimer.setInterval(500)
@@ -222,49 +252,143 @@ class Main(QMainWindow):
     def tools_downloader():
         dlg = DownloaderDlg()
         dlg.exec()
+    
+    def langClick(self,lang_menu,lang,checked):
+        for action in lang_menu.actions():
+            if action.text() == lang:
+                action.setChecked(True)
+#                translator = QTranslator()
+                if translator.load("specton_"+lang, "./i18n", "", ".qm"):
+                    self.ui.retranslateUi(main)
+#                    app.installTranslator(translator)
+            else:
+                action.setChecked(False)
+
+    def mruClick(self,folder):
+        if os.path.exists(folder):
+            self.addFilesFolders([folder],cfg.settings.value('Options/ClearFilelist', True, type=bool))
+    
+    def mruMenuUpdate(self):
+        self.mruMenu.clear()
+        for folder in self.recentFiles:
+            actionMRU = self.mruMenu.addAction(folder)
+            actionMRU.triggered.connect(partial(self.mruClick, folder))
+        
+    def filterBoxChanged(*args):
+        if not args: return
+        self = args[0]
+        
+        if self.sender()==self.ui.filter_comboBox:
+            delay=0
+        else:
+            delay=1000
+        
+        if self.filterTimer.isActive():
+            self.filterTimer.stop() # reset timer if already running
+            
+        self.filterTimer.start(delay)
+                    
+    def doFilterTable(self):
+
+        def doTableHideTypes(table,filtertypes,row):
+            if filtertypes == 0: # "All"
+                return False
+            elif filtertypes == 1: # "Errors only"
+                errorsItem = table.item(row, headerIndexByName(table, "Errors"))
+                if errorsItem.background() == colourQualityBad:
+                    return False
+                else:
+                    return True
+            elif filtertypes == 2: # "Lossless"
+                fnItem = table.item(row, headerIndexByName(table, "Filename"))
+                fn, ext = os.path.splitext(fnItem.toolTip())
+                if ext.lower() in LosslessFormats:
+                    return False
+                else:
+                    return True
+            elif filtertypes == 3: # "Lossy"
+                fnItem = table.item(row, headerIndexByName(table, "Filename"))
+                fn, ext = os.path.splitext(fnItem.toolTip())
+                if ext.lower() in LossyFormats:
+                    return False
+                else:
+                    return True
+            elif filtertypes in (4,5): # "High quality", "Low quality"
+                qualityItem = table.item(row, headerIndexByName(table, "Quality"))
+                background_colour = qualityItem.background()
+                if filtertypes == 4:
+                    return False if background_colour in (colourQualityGood,colourQualityOk) else True
+                else:
+                    return False if background_colour in (colourQualityWarning,colourQualityBad) else True
+                    
+            elif filtertypes == 6: # "Unscanned"  
+                filenameItem = table.item(row, headerIndexByName(table, "Filename"))
+                fileScanned = filenameItem.data(dataScanned)
+                if fileScanned:
+                    return True
+                else:
+                    return False
+                
+        filterText = self.ui.filterBox.text().lower()        
+        filtertypes = self.ui.filter_comboBox.currentIndex()
+        
+        if filterText == "":
+            for i in range(0, self.ui.tableWidget.rowCount()):
+                self.ui.tableWidget.setRowHidden(i,False or (doTableHideTypes(self.ui.tableWidget,filtertypes,i)))
+        else:
+            for i in range(0, self.ui.tableWidget.rowCount()):
+                artistItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget, "Artist"))
+                fnItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget, "Filename"))
+                encoderItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget, "Encoder"))
+                fn = fnItem.toolTip().lower()
+                if (filterText in fn) or (filterText in artistItem.text().lower()) or (filterText in encoderItem.text().lower()):
+                    self.ui.tableWidget.setRowHidden(i,False or (doTableHideTypes(self.ui.tableWidget,filtertypes,i)))
+                else:
+                    self.ui.tableWidget.setRowHidden(i,True)
 
     def tableContextMenu(self, point):
         row = self.ui.tableWidget.rowAt(point.y())
         selected_items = self.ui.tableWidget.selectedItems()
         if not row == -1:
             menu = QMenu(self)
-            viewInfoAction = QAction("View &Info", menu)
+            viewInfoAction = QAction(self.tr("View &Info"), menu)
             viewInfoAction.triggered.connect(partial(self.contextViewInfo, row))
             menu.addAction(viewInfoAction)
-            rescanFileAction = QAction("&Scan File(s)", menu)
+            rescanFileAction = QAction(self.tr("&Scan File(s)"), menu)
             rescanFileAction.triggered.connect(partial(self.contextRescanFile, row, selected_items))
             if self.task_count > 0:
                 rescanFileAction.setEnabled(False)
-            scanFolderAction = QAction("Scan &Folder", menu)
+            scanFolderAction = QAction(self.tr("Scan &Folder"), menu)
             scanFolderAction.triggered.connect(partial(self.contextScanFolder, row))
             if self.task_count > 0:
                 scanFolderAction.setEnabled(False)
             menu.addAction(rescanFileAction)
             menu.addAction(scanFolderAction)
-            playFileAction = QAction("&Play File", menu)
+            playFileAction = QAction(self.tr("&Play File"), menu)
             playFileAction.triggered.connect(partial(self.contextPlayFile, row))
             menu.addAction(playFileAction)
-            browseFolderAction = QAction("&Browse Folder", menu)
+            browseFolderAction = QAction(self.tr("&Browse Folder"), menu)
             browseFolderAction.triggered.connect(partial(self.contextBrowseFolder, row))
             menu.addAction(browseFolderAction)
-            writeReportAction = QAction("Write &Report (Folder)", menu)
+            writeReportAction = QAction(self.tr("Write &Report (Folder)"), menu)
             writeReportAction.triggered.connect(partial(self.contextWriteReport, row))
             menu.addAction(writeReportAction)
             menu.popup(self.ui.tableWidget.viewport().mapToGlobal(point))
 
     def closeEvent(self, event):
         self.cancel_Tasks()
-        windowState = self.saveState()
-        windowGeometry = self.saveGeometry()
-        tableGeometry = self.ui.tableWidget.saveGeometry()
-        tableHeaderState = self.ui.tableWidget.horizontalHeader().saveState()
 
         if cfg.settings.value("Options/SaveWindowState", True, type=bool):
+            windowState = self.saveState()
+            windowGeometry = self.saveGeometry()
+            tableGeometry = self.ui.tableWidget.saveGeometry()
+            tableHeaderState = self.ui.tableWidget.horizontalHeader().saveState()
             cfg.settings.setValue("State/windowState", windowState)
             cfg.settings.setValue("State/windowGeometry", windowGeometry)
             cfg.settings.setValue("State/tableGeometry", tableGeometry)
             cfg.settings.setValue("State/tableHeaderState", tableHeaderState)
 
+        cfg.settings.setValue("State/MRU", self.recentFiles)
         event.accept()
 
     def contextWriteReport(self, row, silent=False):
@@ -458,7 +582,7 @@ class Main(QMainWindow):
             filedirlist = []
 
         if not filedirlist:
-            select = str(QFileDialog.getExistingDirectory(self, "Select Directory to Scan", os.path.expanduser("~")))
+            select = str(QFileDialog.getExistingDirectory(self, self.tr("Select Directory to Scan"), os.path.expanduser("~")))
             if not select == "":
                 filedirlist.append(select)
             else:
@@ -494,9 +618,14 @@ class Main(QMainWindow):
             if os.path.isdir(filedir):
                 self.recursiveAdd(directory=filedir, filemask_regex=filemask_regex, followsymlinks=followsymlinks,
                                   recursedirectories=recursedirectories, usecache=usecache, tableheaders=tableheaders)
+                if filedir in self.recentFiles:
+                    self.recentFiles.remove(filedir)
+                self.recentFiles.appendleft(filedir)
             else:
                 self.addTableWidgetItem(0, os.path.basename(filedir), os.path.dirname(filedir), usecache, tableheaders)
 
+        self.mruMenuUpdate()
+        self.doFilterTable()
         self.ui.tableWidget.setUpdatesEnabled(True)
         self.ui.tableWidget.setSortingEnabled(True)
         self.ui.tableWidget.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -538,7 +667,7 @@ class Main(QMainWindow):
             hashStr = filenameStr.replace("/", "\\") + str(os.path.getmtime(filenameStr))
             filemd5 = md5Str(hashStr)
 
-        if song_info.result_type in ("mediainfo", "mp3guessenc", "aucdtect"):
+        if song_info.result_type in (song_info_obj.MEDIAINFO, song_info_obj.MP3GUESSENC, song_info_obj.AUCDTECT):
 
             if song_info.quality is not None:
                 qualityItem = self.ui.tableWidget.item(row, table_headers.index("Quality"))
@@ -552,7 +681,7 @@ class Main(QMainWindow):
                 if usecache:
                     cfg.filecache.setValue('{}/QualityColour'.format(filemd5), qualityItem.background())
 
-            if song_info.result_type in ("mediainfo", "mp3guessenc"):
+            if song_info.result_type in (song_info_obj.MEDIAINFO, song_info_obj.MP3GUESSENC):
 
                 if song_info.decode_errors > 0:
                     debug_log("{} decode errors detected for file {}".format(song_info.decode_errors, filenameStr))
@@ -571,7 +700,7 @@ class Main(QMainWindow):
 
                 # prefer mp3guessenc encoder info over mediainfo
 
-                if song_info.result_type == "mp3guessenc":
+                if song_info.result_type == song_info_obj.MP3GUESSENC:
                     if not song_info.encoderstring == "":
                         codecText = "{} ({})".format(song_info.audio_format, song_info.encoderstring)
                     elif not song_info.encoder == "":
@@ -626,7 +755,7 @@ class Main(QMainWindow):
                     except KeyError:
                         cfg.filecache.remove('{}/FrameHist'.format(filemd5))
 
-        elif song_info.result_type == "Error_Check":
+        elif song_info.result_type == song_info_obj.ERROR_CHECK:
             debug_log(vars(song_info))  # todo something here
         else:
             debug_log("Update_Table: Result type {} unknown".format(song_info.result_type), logging.WARNING)
@@ -658,7 +787,7 @@ class Main(QMainWindow):
                     return
 
                 debug_log(
-                    "updateMainGui: calling update_Table for row {} with q_info {}".format(q_info.row, vars(q_info)))
+                    "updateMainGui: calling update_Table for row {}".format(q_info.row))
                 self.ui.tableWidget.setUpdatesEnabled(False)
                 self.update_Table(q_info.row, q_info.song_info)
                 self.ui.tableWidget.setUpdatesEnabled(True)
@@ -690,7 +819,7 @@ class Main(QMainWindow):
                         debug_log("updateMainGui: task queue empty, task count={}".format(self.task_count))
                         self.ui.progressBar.setValue(100)
                         self.statusBar().showMessage('Done')
-
+        
     def doScanFile(self, thread):
         self.scanner_threadpool.start(thread)
         with QWriteLocker(self.ql):
@@ -702,7 +831,7 @@ class Main(QMainWindow):
         self.ui.actionClear_Filelist.setEnabled(False)
         self.ui.actionFolder_Select.setEnabled(False)
         scanButton = self.findChild(QPushButton, "scanButton")
-        scanButton.setText("Cancel")
+        scanButton.setText(self.tr("Cancel"))
         scanButton.setIcon(self.ui.actionStop.icon())
         scanButton.clicked.connect(self.ui.actionStop.trigger)
 
@@ -711,7 +840,7 @@ class Main(QMainWindow):
         self.ui.actionClear_Filelist.setEnabled(True)
         self.ui.actionFolder_Select.setEnabled(True)
         scanButton = self.findChild(QPushButton, "scanButton")
-        scanButton.setText("Scan")
+        scanButton.setText(self.tr("Scan"))
         scanButton.setIcon(self.ui.actionScan_Files.icon())
         scanButton.clicked.connect(self.ui.actionScan_Files.trigger)
 
@@ -719,7 +848,7 @@ class Main(QMainWindow):
         ''' loop through table and queue scanner processes for all files
         filelist - optional set of files to scan, all others will be skipped '''
         self.disableScanning()
-        thread_list = []
+        thread_list = deque()
 
         numproc = cfg.settings.value('Options/Processes', 0,
                                      type=int)  # number of scanner processes to run, default = # of cpus
@@ -751,9 +880,10 @@ class Main(QMainWindow):
 
         cmd_timeout = cfg.settings.value("Options/Proc_Timeout", 300, type=int)
 
-        row_count = self.ui.tableWidget.rowCount()
-
-        for i in range(0, row_count):
+        for i in range(0, self.ui.tableWidget.rowCount()):
+            if self.ui.tableWidget.isRowHidden(i):
+                continue
+        
             filenameItem = self.ui.tableWidget.item(i, headerIndexByName(self.ui.tableWidget, "Filename"))
             filenameStr = filenameItem.data(dataFilenameStr)  # filename
 
@@ -845,6 +975,9 @@ Python version: {}
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+    translator = QTranslator()
+    if translator.load(QLocale(), "specton", "_", "./i18n"):
+        app.installTranslator(translator)
     main = Main()
     main.show()
     checkPrereq(main)

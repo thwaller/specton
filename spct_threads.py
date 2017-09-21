@@ -49,14 +49,14 @@ class scanner_Thread(QRunnable):
         if os.path.lexists(self.filenameStr): 
             try:
                 output_str,output_err = runCmd([self.binary,self.options,self.filenameStr],self.cmd_timeout)
-            except Exception as e:
+            except SubprocessError as e:
                 debug_log("Exception {} in runCmd {} for file {}".format(e,self.binary,self.filenameStr),logging.ERROR)
                 output_str = "Error running command {}".format(self.binary)
         else:
             output_str = "Error: file {} not found".format(self.filenameStr) # handle the case where file has been deleted while in queue e.g. temp files or user deletion
                 
         if self.fileinfo_dialog_update is not None:
-            info = infoobj("Scanner_Output",output_str,self.fileinfo_dialog_update,self.filenameStr)
+            info = infoobj(infoobj.SCANNER_OUTPUT,output_str,self.fileinfo_dialog_update,self.filenameStr)
             self.infodlg_q.put(info)
             return
 
@@ -71,16 +71,15 @@ class scanner_Thread(QRunnable):
             debug_log("{} scanner thread finished - row {}, result: {}".format(self.scanner_name,self.row,song_info.encoder))
     
             debug_log("{} scanner thread posting to queue - row {}".format(self.scanner_name,self.row))
-            maininfo_obj = main_info("Scanner_Output",output_str,self.row,song_info)
-            self.main_q.put(maininfo_obj)
         else:
             debug_log("{} scanner thread posting to queue with cmd error - row {}".format(self.scanner_name,self.row),logging.WARNING)
             song_info = song_info_obj()
-            song_info.result_type = "Scanner_Output"
+            song_info.result_type = song_info_obj.SCANNER_OUTPUT
             song_info.cmd_error = True
-            maininfo_obj = main_info("Scanner_Output",output_str,self.row,song_info)
-            self.main_q.put(maininfo_obj)
             debug_log("{} scanner thread finished with cmd error - row {}, result: {}".format(self.scanner_name,self.row,output_str),logging.WARNING)
+            
+        maininfo_obj = main_info(main_info.SCANNER_OUTPUT,output_str,self.row,song_info)
+        self.main_q.put(maininfo_obj)
                 
 class aucdtect_Thread(QRunnable):
     ''' run aucdtect on a file and post results to queue '''
@@ -107,7 +106,7 @@ class aucdtect_Thread(QRunnable):
                     output_str,output_err = runCmd([self.aucdtect_bin,self.aucdtect_options,temp_file],self.cmd_timeout)
                 else:
                     output_str,output_err = runCmd([self.aucdtect_bin,self.aucdtect_options,self.filenameStr],self.cmd_timeout)
-            except Exception as e:
+            except SubprocessError as e:
                 debug_log("Exception {} in runCmd {} for file {}".format(e,self.aucdtect_bin,self.filenameStr),logging.ERROR)
                 output_str = "Error"
         else:
@@ -120,18 +119,16 @@ class aucdtect_Thread(QRunnable):
         
         if not (output_str == "Error"):
             song_info = parse_aucdtect_output(output_str)
-
             debug_log("aucdtect thread finished - row {}, result: {}".format(self.row,song_info.quality))
     
-            maininfo_obj = main_info("Scanner_Output",output_str,self.row,song_info)
-            self.main_q.put(maininfo_obj)
         else:
             song_info = song_info_obj()
-            song_info.result_type = "Scanner_Output"
+            song_info.result_type = song_info_obj.SCANNER_OUTPUT
             song_info.cmd_error = True
-            maininfo_obj = main_info("Scanner_Output",output_str,self.row,song_info)
-            self.main_q.put(maininfo_obj)
             debug_log("aucdtect thread finished with cmd error - row {}, result: {}".format(self.row,output_str),logging.WARNING)
+
+        maininfo_obj = main_info(main_info.SCANNER_OUTPUT,output_str,self.row,song_info)
+        self.main_q.put(maininfo_obj)
 
 class errorCheck_Thread(QRunnable):
     ''' test file for decode errors and post results to queue '''
@@ -154,7 +151,7 @@ class errorCheck_Thread(QRunnable):
                     cmd = [self.decoder_bin,self.decoder_options,self.filenameStr]
                     debug_log("cmd: {}".format(cmd))
                     output_str,output_err = runCmd(cmd,self.cmd_timeout)
-                except Exception as e:
+                except SubprocessError as e:
                     debug_log("Exception {} in runCmd {} for file {}".format(e,self.decoder_bin,self.filenameStr),logging.ERROR)
                     output_str = "Error"
                     output_err = "Error"
@@ -168,23 +165,21 @@ class errorCheck_Thread(QRunnable):
             else:
                 check_str = output_str
             
+            song_info = song_info_obj()
+            song_info.result_type = song_info_obj.ERROR_CHECK
+            maininfo_obj = main_info(main_info.ERROR_CHECK,check_str,self.row,song_info)
+            
             if (check_str == "Error") or ("ERROR while decoding" in check_str): 
-                song_info = song_info_obj()
-                song_info.result_type = "Error_Check"
                 if check_str == "Error":
                     song_info.cmd_error = True
                 else:
                     song_info.file_error = True
-                maininfo_obj = main_info("Error_Check",check_str,self.row,song_info)
-                self.main_q.put(maininfo_obj)
                 debug_log("error check thread finished with error - row {}, result: {}".format(self.row,check_str),logging.WARNING)
             else:
-                song_info = song_info_obj()
-                song_info.result_type = "Error_Check"
                 song_info.file_error = False
-                maininfo_obj = main_info("Error_Check",check_str,self.row,song_info)
-                self.main_q.put(maininfo_obj)
                 debug_log("error check thread finished - row {}, result: {}".format(self.row,check_str))
+                
+            self.main_q.put(maininfo_obj)
         except Exception as e:
             debug_log(e,logging.ERROR)
             
@@ -205,7 +200,7 @@ class makeBitGraphThread(QRunnable):
         output_str = ""
         try:
             output_str,output_err = runCmd([self.ffprobe_bin,"-show_packets","-of","json",self.fn],self.cmd_timeout)
-        except Exception as e:
+        except SubprocessError as e:
             debug_log(e,logging.ERROR)
             return None
     
@@ -243,6 +238,8 @@ class makeBitGraphThread(QRunnable):
                 y_list.append(y) # bitrate
                 x_list.append(round(x,3))
 
+        assert len(x_list) == len(y_list)
+                
         datfile = getTempFileName() + ".dat"
         with open(datfile, "w") as tf: # datfile tho
            for i in range(0,len(x_list)):
@@ -274,7 +271,7 @@ class makeBitGraphThread(QRunnable):
         try:
             debug_log("running {} with cmdfile {}".format(self.gnuplot_bin,cmdfile))
             output_str,output_err = runCmd([self.gnuplot_bin,"{}".format(cmdfile)],self.cmd_timeout)
-        except Exception as e:
+        except SubprocessError as e:
             debug_log(e,logging.ERROR)
             return None
             
@@ -284,7 +281,7 @@ class makeBitGraphThread(QRunnable):
         except OSError:
             pass        
             
-        info = infoobj("BitGraph",pngfile,self.grid,self.fn)
+        info = infoobj(infoobj.BITGRAPH,pngfile,self.grid,self.fn)
         self.infodlg_q.put(info)
 
 class makeBitHistThread(QRunnable):
@@ -301,6 +298,9 @@ class makeBitHistThread(QRunnable):
         self.y = y
 
     def run(self):
+    
+        assert len(self.x) == len(self.y)
+    
         datfile = getTempFileName() + ".dat"
         with open(datfile, "w") as tf:
            for i in range(0,len(self.x)):
@@ -334,7 +334,7 @@ class makeBitHistThread(QRunnable):
             output_str,output_err = runCmd([self.gnuplot_bin,"{}".format(cmdfile)],self.cmd_timeout)
             debug_log(output_str)
             debug_log(output_err)
-        except Exception as e:
+        except SubprocessError as e:
             debug_log(e,logging.ERROR)
             return None
             
@@ -344,7 +344,7 @@ class makeBitHistThread(QRunnable):
         except OSError:
             pass        
             
-        info = infoobj("BitHist",pngfile,self.grid,self.fn)
+        info = infoobj(infoobj.BITHIST,pngfile,self.grid,self.fn)
         self.infodlg_q.put(info)
         
 class makeSpectrogramThread(QRunnable):
@@ -361,12 +361,12 @@ class makeSpectrogramThread(QRunnable):
     def run(self):
         try:
             sox_output,output_err = runCmd([self.sox_bin,self.fn,"-n","spectrogram","-l","-p{}".format(self.palette),"-c ","-o",self.temp_file],self.cmd_timeout)
-        except Exception as e:
+        except SubprocessError as e:
             debug_log(e,logging.ERROR)
             self.temp_file = ""
         if not self.temp_file == "":
             try:
-                info = infoobj("Spectrogram",self.temp_file,self.grid,self.fn)
+                info = infoobj(infoobj.SPECTROGRAM,self.temp_file,self.grid,self.fn)
                 self.infodlg_q.put(info) # Timer watches this queue and updates gui
             except Exception as e:
                 debug_log(e,logging.ERROR)               

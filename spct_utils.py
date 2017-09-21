@@ -86,14 +86,14 @@ def runCmd(cmd,cmd_timeout=300):
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     try:
         proc = subprocess.Popen(cmd,bufsize=-1,startupinfo=startupinfo,stdout=subprocess.PIPE,stderr=subprocess.PIPE,stdin=None,shell=False,universal_newlines=False)
-    except Exception as e:
+    except SubprocessError as e:
         proc = None
         debug_log("exception in runCmd: {}".format(e),logging.ERROR)
     if proc is not None:
         try:
             outputb, output_errb = proc.communicate()
-            output = outputb.decode('utf-8')
-            output_err = output_errb.decode('utf-8')
+            output = outputb.decode('utf-8','replace')
+            output_err = output_errb.decode('utf-8','replace')
         except subprocess.TimeoutExpired(timeout=cmd_timeout):
             proc.kill()
             debug_log("runCmd: Process killed due to timeout",logging.WARNING)
@@ -107,15 +107,15 @@ def format_bytes(num, suffix='B'):
             return "{:3.1f} {}{}".format(num, unit, suffix)
         num /= 1024.0
     return "{:.1f} {}{}".format(num, 'Yi', suffix)
-    
+
 def md5Str(Str):
     return md5(Str.encode('utf-8')).hexdigest()
     
 def findDlg(searchname,debug_enabled,infodlg_list):
-    debug_log("findDlg called list: {} search: {}".format(infodlg_list, searchname))
+    debug_log("findDlg called list: {} search: {}".format(infodlg_list, searchname),logging.DEBUG)
     for obj in infodlg_list:
         if obj.filename == searchname:
-            debug_log("findDlg dialog found: {} filename: {}".format(obj, searchname))
+            debug_log("findDlg dialog found: {} filename: {}".format(obj, searchname),logging.DEBUG)
             return obj
 
     

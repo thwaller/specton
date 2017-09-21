@@ -24,14 +24,14 @@ class DownloaderDlg(QDialog):
         super(DownloaderDlg, self).__init__()
         self.ui = Ui_DownloaderDlg()
         self.ui.setupUi(self)
-        self.setWindowTitle("Tools downloader")
+        self.setWindowTitle(self.tr("Tools downloader"))
         icon = QIcon("./icons/097-download.png")
         self.setWindowIcon(icon)
         self.tw = self.findChild(QTreeWidget, "downloads_treeWidget")
         self.statusLabel = self.findChild(QLabel, "statusLabel")
         bbox = self.findChild(QDialogButtonBox, "downloads_buttonBox")
         bbox.setStandardButtons(QDialogButtonBox.Close)
-        self.install_button = QPushButton("Install selected", self.tw)
+        self.install_button = QPushButton(self.tr("Install selected"), self.tw)
         self.install_button.clicked.connect(self.installSelected)
         bbox.addButton(self.install_button, QDialogButtonBox.ActionRole)
         self.loadToolsJSON(self.tw)
@@ -78,16 +78,16 @@ class DownloaderDlg(QDialog):
 
             tw.setColumnCount(4)
             tw.headerItem().setHidden(False)
-            tw.headerItem().setText(0, "Name")
-            tw.headerItem().setText(1, "Category")
-            tw.headerItem().setText(2, "Download")
-            tw.headerItem().setText(3, "Status")
+            tw.headerItem().setText(0, self.tr("Name"))
+            tw.headerItem().setText(1, self.tr("Category"))
+            tw.headerItem().setText(2, self.tr("Download"))
+            tw.headerItem().setText(3, self.tr("Status"))
             req = QTreeWidgetItem()
-            req.setText(0, "Required")
+            req.setText(0, self.tr("Required"))
             #            req.setCheckState(0,2)
             tw.addTopLevelItem(req)
             opt = QTreeWidgetItem()
-            opt.setText(0, "Optional")
+            opt.setText(0, self.tr("Optional"))
             #            opt.setCheckState(0,0)
             tw.addTopLevelItem(opt)
 
@@ -106,11 +106,11 @@ class DownloaderDlg(QDialog):
                     opt.addChild(item)
                     item.setCheckState(0, 0)
                 if self.checkInstalled(title):
-                    item.setText(3, "Installed")
+                    item.setText(3, self.tr("Installed"))
                     item.setDisabled(True)
                     item.setCheckState(0, 2)
                 else:
-                    item.setText(3, "Not installed")
+                    item.setText(3, self.tr("Not installed"))
                 url = values['url']
                 try:
                     url64 = values['url64']
@@ -167,7 +167,7 @@ class DownloaderDlg(QDialog):
                     debug_log("Error {} getting DL size: {}".format(r.status_code, r.headers))
                     item.setText(2, r.status_code)
                 except requests.exceptions.RequestException as e:
-                    item.setText(2, "Error")
+                    item.setText(2, self.tr("Error"))
                     debug_log(e, logging.ERROR)
             it += 1
 
@@ -186,7 +186,7 @@ class DownloaderDlg(QDialog):
                 install_dir = item.data(0, dataInstallDir)
                 if url_test is not None:
                     fn = os.path.basename(url_test)
-                    self.statusLabel.setText("Downloading {}...".format(fn))
+                    self.statusLabel.setText(self.tr("Downloading")+" {}...".format(fn))
                     QApplication.processEvents()
                     try:
                         r = requests.get(url_test)
@@ -195,7 +195,7 @@ class DownloaderDlg(QDialog):
                         with open(app_dirs.user_cache_dir + "/" + fn, "wb") as zip_f:
                             zip_f.write(r.content)
                         self.installZip(app_dirs.user_cache_dir + "/" + fn, install_dir)
-                        item.setText(3, "Installed")
+                        item.setText(3, self.tr("Installed"))
                         QApplication.processEvents()
                         item.setDisabled(True)
                     except requests.exceptions.HTTPError:
@@ -210,7 +210,7 @@ class DownloaderDlg(QDialog):
 
     def installZip(self, fn, install_dir):
         debug_log("installZip: Installing {} to {}...".format(fn, install_dir))
-        self.statusLabel.setText("Installing {}...".format(os.path.basename(fn)))
+        self.statusLabel.setText(self.tr("Installing")+" {}...".format(os.path.basename(fn)))
         QApplication.processEvents()
         zip_f = zipfile.ZipFile(fn)
         zip_f.extractall(path=app_dirs.user_cache_dir + "/" + install_dir)
