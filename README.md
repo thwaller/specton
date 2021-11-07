@@ -4,6 +4,8 @@ Specton Audio Analyser
 Graphical frontend for various audio scanners (mediainfo, mp3guessenc etc)  
 Cross platform (Windows/Linux/Mac OS X)
 
+I woud like to revisit this project, as I believe there is a real need for a solid solution. Contributors are welcome and invited.
+
 Requires Python 3, PyQt5, requests
 
 Windows: The easiest way to satisfy these requirements is to install [WinPython](http://winpython.github.io/#releases). Be sure to choose an installer with PyQt5 included (These have 'Qt5' in the filename)
